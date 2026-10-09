@@ -5,8 +5,8 @@ namespace ViveShuttleVR
     public static class ShuttleMath
     {
         public const float Step=ShuttlePhysics.Step;
-        public const float NetZ=3.6f;
-        public const float NetHeight=1.3f; // Retained training-court geometry.
+        public const float NetZ=BadmintonCourt.NetZ;
+        public const float NetHeight=BadmintonCourt.NetCenterHeight;
         private static readonly ShuttlePhysicsSettings defaults=new ShuttlePhysicsSettings();
 
         public static Vector3 Predict(Vector3 start, Vector3 velocity, float duration, ShuttlePhysicsSettings settings=null)
@@ -85,9 +85,10 @@ namespace ViveShuttleVR
             Quaternion rotation=Quaternion.Slerp(rotationFrom,rotationTo,fraction);
             contact=Vector3.Lerp(from,to,fraction);
             Vector3 p=Quaternion.Inverse(rotation)*(contact-Vector3.Lerp(racketFrom,racketTo,fraction));
-            float width=.14f+.018f+margin, height=.185f+.018f+margin;
+            float width=RacketSpecification.HeadHalfWidth+.018f+margin, height=RacketSpecification.HeadHalfHeight+.018f+margin;
             surfaceNormal=rotation*Vector3.forward*side;
-            return Mathf.Abs(p.z)<=.018f+margin && p.x*p.x/(width*width)+p.y*p.y/(height*height)<=1f;
+            return Mathf.Abs(p.z)<=.018f+margin && Mathf.Pow(Mathf.Abs(p.x)/width,RacketSpecification.IsometricExponent)+
+                Mathf.Pow(Mathf.Abs(p.y)/height,RacketSpecification.IsometricExponent)<=1f;
         }
 
         public static bool NetCrossing(Vector3 from, Vector3 to, out Vector3 crossing)
@@ -101,12 +102,13 @@ namespace ViveShuttleVR
         public static bool CrossesNet(Vector3 from, Vector3 to)
         {
             Vector3 crossing;
-            return NetCrossing(from,to,out crossing)&&Mathf.Abs(crossing.x)<2.76f&&crossing.y<NetHeight+.018f&&crossing.y>0f;
+            return NetCrossing(from,to,out crossing)&&Mathf.Abs(crossing.x)<=BadmintonCourt.DoublesHalfWidth&&
+                crossing.y<BadmintonCourt.NetHeightAt(crossing.x)+.018f&&crossing.y>0f;
         }
 
         public static bool IsInOpponentCourt(Vector3 local)
         {
-            return Mathf.Abs(local.x)<=2.7f&&local.z>NetZ&&local.z<=9.2f;
+            return BadmintonCourt.IsOnFarSinglesSide(local);
         }
     }
 }

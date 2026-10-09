@@ -51,9 +51,7 @@ namespace ViveShuttleVR.Editor
             net = Material("Net Threads", new Color(0.23f, 0.35f, 0.37f), true);
 
             Transform court = new GameObject("Practice Court - Recenterable").transform;
-            BuildHall(court);
-            BuildCourt(court);
-            BuildNet(court);
+            RegulationHallBuilder.BuildAll(court);
             BuildFeeder(court);
 
             BadmintonSession session = new GameObject("Badminton Session").AddComponent<BadmintonSession>();
@@ -61,17 +59,17 @@ namespace ViveShuttleVR.Editor
             session.audioSource = session.gameObject.AddComponent<AudioSource>();
             session.audioSource.playOnAwake = false;
             session.audioSource.spatialBlend = 0f;
-            session.scoreText = Text("Score", "SCORE 000    HIT 0/0    STREAK 0", new Vector3(0f, 3.95f, 7.8f), 0.039f, mint.color, court);
-            session.statusText = Text("Status", "STATIONARY PRACTICE / 20 SHUTTLES", new Vector3(0f, 3.43f, 7.79f), 0.032f, Color.white, court);
-            session.detailText = Text("Controls", "TRIGGER: START    GRIP: PAUSE    MENU: RECENTER", new Vector3(0f, 2.95f, 7.78f), 0.020f, new Color(0.68f, 0.8f, 0.83f), court);
-            Cube("Scoreboard", new Vector3(0f, 3.5f, 7.9f), new Vector3(7.2f, 1.9f, 0.08f), navy, court);
-            Cube("Scoreboard accent", new Vector3(0f, 4.48f, 7.85f), new Vector3(7.2f, 0.025f, 0.05f), mint, court);
+            session.scoreText = Text("Score", "SCORE 000    HIT 0/0    STREAK 0", new Vector3(0f, 4.12f, 12.87f), 0.060f, mint.color, court);
+            session.statusText = Text("Status", "AI EASY / FIRST TO 7", new Vector3(0f, 3.53f, 12.86f), 0.045f, Color.white, court);
+            session.detailText = Text("Controls", "TRIGGER: START    TAP MENU: PAUSE    HOLD MENU: RESET", new Vector3(0f, 2.88f, 12.85f), 0.029f, new Color(0.68f, 0.8f, 0.83f), court);
+            Cube("Scoreboard", new Vector3(0f, 3.55f, 13f), new Vector3(10.4f, 2.8f, 0.08f), navy, court);
+            Cube("Scoreboard accent", new Vector3(0f, 4.98f, 12.95f), new Vector3(10.4f, 0.025f, 0.05f), mint, court);
             Transform quickGuide = new GameObject("Nearby controls card").transform;
             quickGuide.SetParent(court,false);
             quickGuide.localPosition = new Vector3(-1.25f,1.35f,2.2f);
             quickGuide.localRotation = Quaternion.Euler(0f,-25f,0f);
             Cube("Card backing",Vector3.zero,new Vector3(.95f,.56f,.025f),navy,quickGuide);
-            Text("Quick guide","TRIGGER / START\nGRIP / PAUSE\nMENU / RECENTER",new Vector3(0f,0f,-.025f),.011f,white.color,quickGuide);
+            Text("Quick guide","TRIGGER / START\nTAP MENU / PAUSE\nHOLD MENU / RESET",new Vector3(0f,0f,-.025f),.011f,white.color,quickGuide);
 
             session.reachMarker = Ring("Reach ring - shuttle arrives here", new Vector3(0.22f, 1.07f, 0.62f), 0.11f, 0.11f, 0.0025f, mint, court, false);
             session.landingMarker = Ring("Last landing", new Vector3(0f, 0.035f, 6f), 0.19f, 0.19f, 0.025f, coral, court, true);
@@ -87,7 +85,7 @@ namespace ViveShuttleVR.Editor
             key.shadows = LightShadows.Soft;
             RenderSettings.ambientMode = AmbientMode.Flat;
             RenderSettings.ambientLight = new Color(0.45f, 0.52f, 0.58f);
-            RenderSettings.fog = true;
+            RenderSettings.fog = false;
             RenderSettings.fogColor = navy.color;
             RenderSettings.fogMode = FogMode.Linear;
             RenderSettings.fogStartDistance = 16f;
@@ -96,66 +94,6 @@ namespace ViveShuttleVR.Editor
             EditorBuildSettings.scenes = new[] { new EditorBuildSettingsScene(ScenePath, true) };
             AssetDatabase.SaveAssets();
             Debug.Log("[Shuttle Build] Practice scene created: " + ScenePath);
-        }
-
-        private static void BuildCourt(Transform root)
-        {
-            Cube("Hall floor", new Vector3(0f, -0.08f, 4f), new Vector3(18f, 0.12f, 22f), floor, root);
-            Cube("Near court", new Vector3(0f, -0.009f, 1f), new Vector3(5.4f, 0.025f, 5.2f), courtDark, root);
-            Cube("Far court", new Vector3(0f, -0.008f, 6.4f), new Vector3(5.4f, 0.025f, 5.6f), courtGreen, root);
-            float y = 0.011f;
-            Line("Boundary", new[] { new Vector3(-2.7f,y,-1.6f), new Vector3(2.7f,y,-1.6f),new Vector3(2.7f,y,9.2f),new Vector3(-2.7f,y,9.2f),new Vector3(-2.7f,y,-1.6f) }, .028f, white, root);
-            foreach (float x in new[] { -2.2f, 2.2f })
-                Line("Singles sideline", new[] { new Vector3(x,y,-1.6f),new Vector3(x,y,9.2f) }, .025f, white, root);
-            foreach (float z in new[] { 1.7f, 5.5f, 8.4f })
-                Line("Service line", new[] { new Vector3(-2.7f,y,z),new Vector3(2.7f,y,z) }, .025f, white, root);
-            Line("Service center near", new[] { new Vector3(0f,y,-1.6f),new Vector3(0f,y,1.7f) }, .025f, white, root);
-            Line("Service center far", new[] { new Vector3(0f,y,5.5f),new Vector3(0f,y,9.2f) }, .025f, white, root);
-            Ring("Seated base - visual only", new Vector3(0f, .018f, 0f), .45f, .45f, .012f, mint, root, true);
-            Text("Side label", "01 / STATIONARY TRAINING", new Vector3(-3.15f, .018f, 3f), .012f, mint.color, root).transform.localRotation = Quaternion.Euler(90f, 0f, 90f);
-        }
-
-        private static void BuildHall(Transform root)
-        {
-            Cube("Back wall", new Vector3(0f, 3.3f, 11f), new Vector3(18f, 6.8f, .15f), navy, root);
-            Cube("Left wall", new Vector3(-7f, 3.3f, 4f), new Vector3(.15f, 6.8f, 16f), navy, root);
-            Cube("Right wall", new Vector3(7f, 3.3f, 4f), new Vector3(.15f, 6.8f, 16f), navy, root);
-            Text("Brand", "SHUTTLE / LAB", new Vector3(0f, 6.0f, 10.8f), .078f, white.color, root);
-            Text("Subheading", "FIND YOUR RHYTHM", new Vector3(0f, 5.35f, 10.78f), .025f, mint.color, root);
-            for (int i = 0; i < 6; i++)
-            {
-                Cube("Wall batten L", new Vector3(-6.86f, 2.5f, i * 2.4f - 1f), new Vector3(.08f, 4.8f, .05f), net, root);
-                Cube("Wall batten R", new Vector3(6.86f, 2.5f, i * 2.4f - 1f), new Vector3(.08f, 4.8f, .05f), net, root);
-                Cube("Ceiling light", new Vector3(0f, 6.4f, i * 2.6f - 1.6f), new Vector3(8f, .025f, .07f), white, root);
-            }
-            Cube("Wall stripe L", new Vector3(-6.8f, .28f, 4f), new Vector3(.025f, .03f, 15f), mint, root);
-            Cube("Wall stripe R", new Vector3(6.8f, .28f, 4f), new Vector3(.025f, .03f, 15f), coral, root);
-            Cube("Bench seat", new Vector3(4.2f,.43f,5.5f), new Vector3(.55f,.10f,3.5f), courtDark, root);
-            foreach (float z in new[] { 4.2f,6.8f })
-                Cube("Bench leg", new Vector3(4.2f,.2f,z), new Vector3(.4f,.4f,.12f), black, root);
-            Text("Safety notice", "STAY IN PLACE\nSMALL SWINGS\nCLEAR ARM SPACE", new Vector3(-4.3f,1.8f,7.4f), .017f, white.color, root);
-        }
-
-        private static void BuildNet(Transform root)
-        {
-            float z = ShuttleMath.NetZ;
-            foreach (float x in new[] { -2.8f, 2.8f })
-            {
-                Cube("Net post", new Vector3(x,.68f,z), new Vector3(.055f,1.36f,.055f), coral, root);
-                Cube("Net foot", new Vector3(x,.04f,z), new Vector3(.32f,.07f,.5f), black, root);
-            }
-            for (int i = 0; i <= 40; i++)
-            {
-                float x = Mathf.Lerp(-2.76f, 2.76f, i / 40f);
-                Line("Net vertical", new[] { new Vector3(x,.53f,z),new Vector3(x,1.3f,z) }, .006f, net, root);
-            }
-            for (int i = 0; i <= 7; i++)
-            {
-                float y = Mathf.Lerp(.53f, 1.3f, i / 7f);
-                Line("Net horizontal", new[] { new Vector3(-2.76f,y,z),new Vector3(2.76f,y,z) }, .006f, net, root);
-            }
-            Cube("Net top tape", new Vector3(0f,1.3f,z), new Vector3(5.55f,.035f,.025f), white, root);
-            Cube("Net bottom tape", new Vector3(0f,.53f,z), new Vector3(5.55f,.014f,.016f), white, root);
         }
 
         private static void BuildFeeder(Transform root)
@@ -174,7 +112,7 @@ namespace ViveShuttleVR.Editor
             GameObject cameraObject = new GameObject("Main Camera");
             cameraObject.tag = "MainCamera";
             cameraObject.transform.SetParent(rig, false);
-            cameraObject.transform.localPosition = new Vector3(0f,1.25f,0f);
+            cameraObject.transform.localPosition = new Vector3(0f,session.VirtualEyeHeight,0f);
             Camera camera = cameraObject.AddComponent<Camera>();
             camera.nearClipPlane = .04f;
             camera.farClipPlane = 50f;
@@ -199,23 +137,8 @@ namespace ViveShuttleVR.Editor
             grip.localPosition = new Vector3(hand == XRNode.LeftHand ? -.3f : .3f, .94f, .2f);
             Transform visual = new GameObject("Racket Visual").transform;
             visual.SetParent(grip, false);
-            Cube("Grip", new Vector3(0f,.035f,0f), new Vector3(.033f,.17f,.035f), black, visual);
-            for (int i = 0; i < 7; i++)
-                Cube("Grip tape", new Vector3(0f,-.032f+i*.022f,-.018f), new Vector3(.034f,.003f,.002f), color, visual);
-            Cube("Shaft", new Vector3(0f,.17f,0f), new Vector3(.012f,.17f,.012f), color, visual);
-            Transform head = Ring("Racket Head", new Vector3(0f,.40f,0f), .14f, .185f, .012f, color, visual, false);
-            for (int i = -5; i <= 5; i++)
-            {
-                float x = i * .024f;
-                float h = .175f * Mathf.Sqrt(Mathf.Max(0f,1f-x*x/(.135f*.135f)));
-                Line("String vertical",new[] { new Vector3(x,-h,0f),new Vector3(x,h,0f) }, .0018f, white, head);
-            }
-            for (int i = -7; i <= 7; i++)
-            {
-                float y = i * .023f;
-                float w = .13f * Mathf.Sqrt(Mathf.Max(0f,1f-y*y/(.178f*.178f)));
-                Line("String horizontal",new[] { new Vector3(-w,y,0f),new Vector3(w,y,0f) }, .0018f, white, head);
-            }
+            Transform head = RacketGeometry.Build(visual, black, color, white, black);
+            PersistRacketMeshes(visual, hand.ToString());
             RacketController controller = grip.gameObject.AddComponent<RacketController>();
             controller.hand = hand;
             controller.head = head;
@@ -223,6 +146,28 @@ namespace ViveShuttleVR.Editor
             controller.session = session;
             controller.ApplyGripAlignment();
             return controller;
+        }
+
+        private static void PersistRacketMeshes(Transform visual, string prefix)
+        {
+            Directory.CreateDirectory("Assets/Generated/Rackets");
+            AssetDatabase.Refresh();
+            int index = 0;
+            foreach (MeshFilter filter in visual.GetComponentsInChildren<MeshFilter>())
+            {
+                Mesh generated = filter.sharedMesh;
+                if (generated == null || AssetDatabase.Contains(generated)) continue;
+                string path = "Assets/Generated/Rackets/" + prefix + "-" + index++ + ".asset";
+                Mesh saved = AssetDatabase.LoadAssetAtPath<Mesh>(path);
+                if (saved == null) AssetDatabase.CreateAsset(generated, path);
+                else
+                {
+                    EditorUtility.CopySerialized(generated, saved);
+                    Object.DestroyImmediate(generated);
+                    EditorUtility.SetDirty(saved);
+                    filter.sharedMesh = saved;
+                }
+            }
         }
 
         private static void CreateShuttle(BadmintonSession session)
@@ -359,7 +304,7 @@ namespace ViveShuttleVR.Editor
             OpenScene();
             Camera camera = Camera.main;
             camera.GetComponent<TrackedPoseDriver>().enabled = false;
-            camera.transform.position = new Vector3(0f,1.45f,-.85f);
+            camera.transform.position = new Vector3(0f,1.63f,0f);
             camera.transform.rotation = Quaternion.Euler(-3f,0f,0f);
             camera.fieldOfView = 72f;
             // Include runtime-created equipment/readout controls in visual QA.
@@ -400,6 +345,12 @@ namespace ViveShuttleVR.Editor
             if (report.summary.result != BuildResult.Succeeded)
                 throw new InvalidOperationException("Windows build failed: " + report.summary.result);
             Debug.Log("[Shuttle Build] Windows player built successfully.");
+        }
+
+        public static void RebuildVerifyAndBuildWindows()
+        {
+            BuildScene();
+            VerifyAndBuildWindows();
         }
 
         [MenuItem("Tools/Vive Shuttle VR/Verify and Build Windows")]

@@ -15,14 +15,14 @@ namespace ViveShuttleVR
         public ShuttleState State { get { return state; } }
         private ShuttleState state;
         private float age;
-        private bool touchedNet, netFault;
+        private bool touchedNet, netFault, crossedNetSinceHit;
 
         public void Launch(Vector3 position, Vector3 velocity)
         {
             gameObject.SetActive(true);
             state=ShuttleState.Launch(position,velocity);
             Flying=true;
-            Returned=touchedNet=netFault=false;
+            Returned=touchedNet=netFault=crossedNetSinceHit=false;
             age=0f;
             ApplyVisualPose();
             if(trail!=null) { trail.Clear(); trail.emitting=true; }
@@ -47,13 +47,31 @@ namespace ViveShuttleVR
         public bool ReturnShot(RacketContact contact)
         {
             if(!Flying||Returned||!session.Running) return false;
+            if(session.IsAiMatch && session.court.InverseTransformPoint(state.position).z>=ShuttleMath.NetZ) return false;
             ImpactResult impact=RacketImpact.Resolve(state,contact,session.PhysicsSettings);
             if(!impact.hit) return false;
             Returned=true;
             state.velocity=impact.outgoingVelocity;
             state.angularVelocity=impact.angularVelocity;
+            age=0f;
+            touchedNet=netFault=crossedNetSinceHit=false;
             // Preserve pre-impact feather orientation: it must turn over under air load.
             session.OnHit(impact,contact);
+            return true;
+        }
+
+        public bool OpponentReturn(RacketContact contact)
+        {
+            if(!Flying||!Returned||!session.Running||!session.IsAiMatch||session.opponent==null||
+                !crossedNetSinceHit||netFault||session.court.InverseTransformPoint(state.position).z<=ShuttleMath.NetZ) return false;
+            ImpactResult impact=RacketImpact.Resolve(state,contact,session.opponent.PhysicsSettings);
+            if(!impact.hit) return false;
+            Returned=false;
+            state.velocity=impact.outgoingVelocity;
+            state.angularVelocity=impact.angularVelocity;
+            age=0f;
+            touchedNet=netFault=crossedNetSinceHit=false;
+            session.OnOpponentHit(impact);
             return true;
         }
 
@@ -62,6 +80,7 @@ namespace ViveShuttleVR
         public void AdvanceFrame(float deltaTime)
         {
             if(!Flying||!session.Running) return;
+            if(session.IsAiMatch && Returned && session.opponent!=null) session.opponent.AdvancePlanning();
             float frame=Mathf.Clamp(deltaTime,0f,.08f);
             int steps=Mathf.Max(1,Mathf.CeilToInt(frame/ShuttlePhysics.Step));
             float dt=frame/steps;
@@ -107,12 +126,21 @@ namespace ViveShuttleVR
                 Vector3 crossing;
                 if(ShuttleMath.NetCrossing(localFrom,localNext,out crossing))
                 {
-                    if(Returned) session.OnNetCrossing(crossing.y-ShuttleMath.NetHeight);
-                    if(!touchedNet&&Mathf.Abs(crossing.x)<2.76f&&crossing.y<ShuttleMath.NetHeight+.018f&&crossing.y>0f)
+                    float netTop=BadmintonCourt.NetHeightAt(crossing.x);
+                    crossedNetSinceHit=true;
+                    if(Returned) session.OnNetCrossing(crossing.y-netTop);
+                    if(!touchedNet&&Mathf.Abs(crossing.x)<=BadmintonCourt.DoublesHalfWidth&&crossing.y<netTop+.018f&&crossing.y>0f)
                     {
                         touchedNet=true;
+                        if(crossing.y<netTop-BadmintonCourt.NetDepth-.018f)
+                        {
+                            // Passing below the physical net is a fault, not a
+                            // bounce off an invisible floor-to-tape solid wall.
+                            Finish("NET",crossing);
+                            break;
+                        }
                         Vector3 localVelocity=session.court.InverseTransformDirection(state.velocity);
-                        bool tape=crossing.y>ShuttleMath.NetHeight-.035f;
+                        bool tape=crossing.y>netTop-.0375f;
                         netFault=!tape;
                         float travelSign=Mathf.Sign(localVelocity.z);
                         localVelocity=new Vector3(localVelocity.x*.35f,tape?Mathf.Max(.12f,localVelocity.y*.2f):Mathf.Min(0f,localVelocity.y*.15f),localVelocity.z*(tape?.22f:-.06f));
@@ -123,12 +151,17 @@ namespace ViveShuttleVR
                         localNext=crossing;
                     }
                 }
+                if(session.IsAiMatch && Returned && !touchedNet && session.opponent!=null)
+                {
+                    RacketContact opponentContact;
+                    if(session.opponent.TryContact(before,state,dt,out opponentContact)) OpponentReturn(opponentContact);
+                }
                 if(localNext.y<=.025f)
                 {
                     float t=Mathf.Clamp01((localFrom.y-.025f)/Mathf.Max(.00001f,localFrom.y-localNext.y));
                     Finish(netFault?"NET":Returned?"LAND":"MISS",Vector3.Lerp(localFrom,localNext,t));
                 }
-                else if(age>10f||Mathf.Abs(localNext.x)>10f||localNext.z<-3f||localNext.z>15f)
+                else if(age>10f||Mathf.Abs(localNext.x)>10f||localNext.z<ShuttleMath.NetZ-BadmintonCourt.HalfLength-2f||localNext.z>ShuttleMath.NetZ+BadmintonCourt.HalfLength+2f)
                     Finish(netFault?"NET":Returned?"OUT":"MISS",localNext);
             }
             ApplyVisualPose();

@@ -14,7 +14,8 @@ namespace ViveShuttleVR.Editor
             public ShuttleState arrival;
             public Vector3 launch;
             public float apex, netHeight, angle;
-            public bool crossedNet;
+            public Vector3 netCrossing;
+            public bool crossedNet, hitNet;
         }
 
         public static int Run(BadmintonSession session)
@@ -22,10 +23,11 @@ namespace ViveShuttleVR.Editor
             checks = 0;
             TestSequences();
             TestProfiles();
+            TestFocusedDrills();
             TestDistinctFlight();
             TestGroundDepths();
             TestMixedSession(session);
-            Debug.Log("[Feed Test] PASS " + checks + " checks: balanced seeded order, standing/seated stationary reach, physical net clearance and arrival, distinct trajectories and ground depths, full unhit live flights, mixed feeds and pause preservation.");
+            Debug.Log("[Feed Test] PASS " + checks + " checks: balanced seeded order, standing/seated real-height and 175 cm virtual-stature reach, physical net clearance and arrival, distinct trajectories and ground depths, full unhit live flights in both height modes, mixed feeds and pause preservation.");
             return checks;
         }
 
@@ -62,7 +64,7 @@ namespace ViveShuttleVR.Editor
         private static void TestProfiles()
         {
             foreach (float mass in new[] { .0045f, .0054f, .0060f })
-            foreach (float height in new[] { 1.25f, 1.6f, 1.85f })
+            foreach (float height in new[] { 1.25f, 1.6f, 1.63f, 1.85f })
             foreach (int hand in new[] { -1, 1 })
             foreach (int variant in new[] { 0, 1, 2 })
             foreach (FeedKind kind in Enum.GetValues(typeof(FeedKind)))
@@ -83,8 +85,9 @@ namespace ViveShuttleVR.Editor
                 Require(Vector3.Distance(flight.arrival.position, profile.targetLocal) < .015f, "Solver missed mint target: " + name);
                 Vector3 independentlyPredicted = ShuttleMath.Predict(profile.sourceLocal, flight.launch, profile.duration, settings);
                 Require(Vector3.Distance(independentlyPredicted, flight.arrival.position) < .005f, "Predict and traced trajectory disagree: " + name);
-                Require(flight.crossedNet && flight.netHeight > ShuttleMath.NetHeight + .04f, "Feed hits/skips net: " + name);
-                Require(flight.apex < 6.8f, "Feed exceeds training-hall height: " + name);
+                Require(flight.crossedNet && !flight.hitNet && flight.netHeight > BadmintonCourt.NetHeightAt(flight.netCrossing.x) + .04f,
+                    "Feed hits/skips regulation net: " + name);
+                Require(flight.apex < RegulationHallBuilder.HallClearHeight, "Feed exceeds training-hall height: " + name);
                 Require(flight.arrival.velocity.z < -.3f && flight.arrival.velocity.y < -.5f, "Feed is not approaching player on descent: " + name);
                 Require(flight.launch.magnitude < 60f && flight.arrival.velocity.magnitude < 12f, "Unmoderated feed speed: " + name);
                 if (mass == .0054f && hand == 1 && variant == 1)
@@ -105,10 +108,46 @@ namespace ViveShuttleVR.Editor
             }
         }
 
+        private static void TestFocusedDrills()
+        {
+            // Preserve actual floor/eye height in both specialised drills. There
+            // must be no dependence on the former artificial 1.5/1.75 m eye.
+            foreach(PracticeDrill drill in new[]{PracticeDrill.NetTouch,PracticeDrill.Overhead})
+            foreach(float eyeHeight in new[]{1.25f,1.6f,1.63f,1.85f})
+            foreach(float mass in new[]{.0045f,.0054f,.006f})
+            foreach(int hand in new[]{-1,1})
+            {
+                bool net=drill==PracticeDrill.NetTouch;
+                float playerZ=net?2.4f:1.2f;
+                var eye=new Vector3(0f,eyeHeight,playerZ);
+                var profile=PracticeFeed.Fixed(drill,hand,eye,playerZ,.62f,.22f);
+                var settings=new ShuttlePhysicsSettings { mass=mass };
+                string label=drill+" eye="+eyeHeight+" mass="+mass+" hand="+hand;
+                Require(Mathf.Abs(profile.targetLocal.y-eyeHeight-(net?-.16f:.22f))<.0001f,
+                    "Focused drill uses an artificial eye height: "+label);
+                Require(Mathf.Abs(profile.targetLocal.z-playerZ-.62f)<.0001f,
+                    "Focused drill changed actual reach: "+label);
+                Trajectory flight=Trace(profile,settings);
+                Require(Finite(flight.launch) && Finite(flight.arrival.position),"Focused feed is non-finite: "+label);
+                Require(Vector3.Distance(flight.arrival.position,profile.targetLocal)<.015f,
+                    "Focused feed misses reachable target: "+label);
+                Require(flight.crossedNet && !flight.hitNet && flight.netHeight>BadmintonCourt.NetHeightAt(flight.netCrossing.x)+.04f,
+                    "Focused feed does not clear regulation net: "+label);
+                Require(flight.apex<RegulationHallBuilder.HallClearHeight,"Focused feed hits ceiling: "+label);
+                Require(flight.arrival.velocity.z<-.1f && flight.arrival.velocity.y<-.1f,
+                    "Focused feed is not approaching on descent: "+label);
+                Vector3 ground; float groundTime;
+                Require(TryTraceGround(profile,settings,out ground,out groundTime) && Finite(ground) && groundTime>profile.duration,
+                    "Focused miss fails to reach finite ground after intercept: "+label);
+                if(mass==.0054f && hand==1)
+                    Debug.Log("[Feed Test] Focused "+label+" target="+profile.targetLocal+" net="+flight.netHeight.ToString("F3")+"m");
+            }
+        }
+
         private static void TestDistinctFlight()
         {
             var settings = new ShuttlePhysicsSettings();
-            foreach (float height in new[] { 1.25f, 1.6f, 1.85f })
+            foreach (float height in new[] { 1.25f, 1.6f, 1.63f, 1.85f })
             {
                 Vector3 eye = new Vector3(0f, height, 0f);
                 FeedProfile clearProfile = PracticeFeed.Build(FeedKind.Clear, 1, eye, 0f, .62f, 1);
@@ -146,11 +185,13 @@ namespace ViveShuttleVR.Editor
                 ShuttlePhysics.Integrate(ref state, settings, dt);
                 time += dt;
                 result.apex = Mathf.Max(result.apex, state.position.y);
+                result.hitNet |= ShuttleMath.CrossesNet(before,state.position);
                 Vector3 crossing;
                 if (ShuttleMath.NetCrossing(before, state.position, out crossing))
                 {
                     result.crossedNet = true;
                     result.netHeight = crossing.y;
+                    result.netCrossing = crossing;
                 }
             }
             result.arrival = state;
@@ -215,6 +256,9 @@ namespace ViveShuttleVR.Editor
             Vector3 originalPosition = head.position;
             Quaternion originalRotation = head.rotation;
             PracticeDrill originalDrill = session.drill;
+            PracticeMode originalMode = session.mode;
+            bool originalHeightSimulation = session.simulatePlayerHeight;
+            float originalStature = session.simulatedStature;
             FeedPattern originalPattern = session.feedPattern;
             float originalReach = session.seatedReach;
             float originalMass = session.physics.mass;
@@ -223,17 +267,26 @@ namespace ViveShuttleVR.Editor
             Require(serve != null, "Mixed feeder entrypoint missing");
             try
             {
+                session.mode = PracticeMode.Training;
                 session.drill = PracticeDrill.Rally;
                 session.feedPattern = FeedPattern.Mixed;
                 session.seatedReach = .62f;
                 session.physics.mass = .0054f;
                 session.feedSeed = 25054;
                 session.roundLength = 5;
+                session.simulatedStature = 1.75f;
+                foreach (bool simulate in new[] { false, true })
                 foreach (float height in new[] { 1.25f, 1.6f, 1.85f })
                 {
+                    session.simulatePlayerHeight = simulate;
                     head.SetPositionAndRotation(new Vector3(1.2f, height, -.7f), Quaternion.Euler(0f, 45f, 0f));
                     Require(session.Recenter(), "Mixed standing/seated recenter failed");
                     session.StartPractice(XRNode.RightHand);
+                    Vector3 localEye=session.court.InverseTransformPoint(head.position);
+                    Require(Mathf.Abs(localEye.y-(simulate?1.63f:height))<.0001f,
+                        "Mixed live feed did not preserve selected virtual/real height mode");
+                    Require(Mathf.Abs(session.court.position.y-(simulate?height-1.63f:0f))<.0001f,
+                        "Mixed live feed has incorrect virtual-floor offset");
                     Vector3 courtPosition = session.court.position;
                     Quaternion courtRotation = session.court.rotation;
                     Vector3 headPosition = head.position;
@@ -246,6 +299,10 @@ namespace ViveShuttleVR.Editor
                         FeedProfile profile = session.LastFeedProfile;
                         Require(session.shuttle.Flying && session.Feeds == i + 1 && profile.kind == order[i], "Live mixed order/lifecycle failed");
                         Require(Vector3.Distance(session.reachMarker.localPosition, profile.targetLocal) < .001f, "Mint ring not at actual incoming contact");
+                        Vector3 physicalReach=session.court.InverseTransformDirection(session.reachMarker.position-head.position);
+                        Require(physicalReach.z>=.4199f && physicalReach.z<=.7501f &&
+                            Mathf.Abs(physicalReach.x)<=.3001f && physicalReach.y>=-.3501f && physicalReach.y<=.2201f,
+                            "Virtual stature moved mixed target outside actual stationary hand reach");
                         Require(Vector3.Distance(session.court.InverseTransformPoint(session.shuttle.transform.position), profile.sourceLocal) < .001f,
                             "Live launch not at chosen profile source");
                         Require(Vector3.Distance(session.court.Find("Feeder Assembly").localPosition,
@@ -309,6 +366,9 @@ namespace ViveShuttleVR.Editor
                 session.shuttle.Stop();
                 head.SetPositionAndRotation(originalPosition, originalRotation);
                 session.drill = originalDrill;
+                session.mode = originalMode;
+                session.simulatePlayerHeight = originalHeightSimulation;
+                session.simulatedStature = originalStature;
                 session.feedPattern = originalPattern;
                 session.seatedReach = originalReach;
                 session.physics.mass = originalMass;

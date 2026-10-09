@@ -22,6 +22,7 @@ namespace ViveShuttleVR
         public float swingSpeed, normalSwing, brushSpeed, sliceRatio, quality, normalizedOffset, closingSpeed;
         // Reduced-order contact telemetry, not a measured real string-bed map.
         public float contactDuration, maxIndentation, slidingFraction, wrapAngle, axialSpin;
+        public float effectiveRacketMass;
     }
 
     public static class RacketImpact
@@ -50,7 +51,7 @@ namespace ViveShuttleVR
             Vector3 relative=incoming.velocity+Vector3.Cross(incoming.angularVelocity,corkArm)-racketVelocity;
             float closing=-Vector3.Dot(relative,normal);
             Vector3 local=Quaternion.Inverse(contact.faceRotation)*(contact.point-contact.center);
-            float radius=Mathf.Sqrt(local.x*local.x/(.14f*.14f)+local.y*local.y/(.185f*.185f));
+            float radius=settings.RacketModel.NormalizedFaceRadius(new Vector2(local.x,local.y));
             float quality=Mathf.Clamp01(1f-settings.SweetSpotFalloff*radius*radius);
             ImpactResult result=new ImpactResult {
                 incomingVelocity=incoming.velocity, resolvedNormal=normal,
@@ -65,7 +66,11 @@ namespace ViveShuttleVR
                 return result;
 
             float mass=Mathf.Max(.001f,settings.mass);
-            float racketMass=Mathf.Max(.02f,settings.effectiveRacketMass);
+            // Published total frame weight is not a point mass at the strings.
+            // Estimate I/r^2 about the grip, including lower torsional support for
+            // lateral mishits; the scalar is frozen during this brief contact.
+            float racketMass=settings.RacketContactMass(local,Quaternion.Inverse(contact.faceRotation)*normal);
+            result.effectiveRacketMass=racketMass;
             float inverseMass=1f/mass+1f/racketMass;
             float inertiaScale=Mathf.Max(.2f,settings.InertiaScale);
             float normalInverseMass=DirectionalInverseMass(normal,corkArm,tail,inverseMass,inertiaScale);

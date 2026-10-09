@@ -14,9 +14,10 @@ namespace ViveShuttleVR
         private void OnGUI()
         {
             if (session.IsVR) return;
-            GUI.Box(new Rect(15, Screen.height - 72, Screen.width - 30, 58),
+            GUI.Box(new Rect(15, Screen.height - 94, Screen.width - 30, 80),
                 "DESKTOP | SPACE: start  Click near ring: hit  P: pause  R: reset + recenter | " + session.EquipmentSummary + "\n" +
-                "Paused, no shuttle: 1/2/3 drills  M fixed/mixed feeds  A assist  [ / ] tension  - / = mass  Backspace: 25 LB / 5.4 G");
+                "Paused, no shuttle: F4 AI/training  F5 Easy  F6 Club  F7 Advanced  B 4U/3U  [ / ] tension\n" +
+                "1/2/3 training drills  M fixed/mixed feeds  A assist  - / = shuttle mass  Backspace: 25 LB / 5.4 G");
         }
     }
 }

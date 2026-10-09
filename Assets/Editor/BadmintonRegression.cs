@@ -28,13 +28,23 @@ namespace ViveShuttleVR.Editor
             BadmintonSession session = Object.FindObjectOfType<BadmintonSession>();
             Require(session != null && session.rackets.Length == 2, "Two rackets and manager required");
             session.playerCamera.GetComponent<TrackedPoseDriver>().enabled = false;
+            Require(session.simulatePlayerHeight && Mathf.Abs(session.simulatedStature-1.75f)<.0001f,
+                "Scene must default to requested 175 cm simulated stature");
+            Require(Mathf.Abs(session.VirtualEyeHeight-1.63f)<.0001f,
+                "175 cm stature must map to the documented 163 cm virtual eye height");
             // Legacy lifecycle fixtures target the original repeatable reach ring.
             // Mixed-feed coverage below exercises the new runtime default separately.
+            session.mode = PracticeMode.Training;
             session.feedPattern = FeedPattern.Fixed;
+            session.simulatePlayerHeight = false;
             foreach (Transform item in Object.FindObjectsOfType<Transform>())
                 Require(GameObjectUtility.GetMonoBehavioursWithMissingScriptCount(item.gameObject) == 0, "Missing script: " + item.name);
 
+            checks += RegulationCourtRegression.Run(session.court);
+            checks += RacketSpecificationRegression.Run();
+            checks += OpponentRegression.Run();
             TestFeeds();
+            TestPlayerHeight(session);
             TestSweeps();
             TestGripAlignment(session);
             TestImpacts();
@@ -44,15 +54,19 @@ namespace ViveShuttleVR.Editor
             TestClassifier();
             checks += EquipmentPhysicsRegression.Run(session);
             checks += PracticeFeedRegression.Run(session);
+            checks += PracticeControlRegression.Run(session);
+            checks += OpponentIntegrationRegression.Run(session);
             session.shuttle.Stop();
+            session.mode = PracticeMode.Training;
             session.feedPattern = FeedPattern.Fixed;
+            session.simulatePlayerHeight = false;
             session.playerCamera.transform.SetPositionAndRotation(new Vector3(1.4f,1.2f,-.6f),Quaternion.Euler(8f,40f,0f));
             session.Recenter();
             TestSession(session);
             TestFrameRates(session);
             TestDrills(session);
             TestAlignment(session);
-            Debug.Log("[Shuttle Test] PASS " + checks + " checks: XR and scene, varied seated feeds and repeatable feeder, bidirectional swept contact, grip-speed response, forward-swing regression, mass-scaled passive energy, 25-lb equipment defaults and guarded adjustments, finite string/cork compliance and signed slice spin, sweet spot, stationary blocks, drag/tumble stability, technique features and real impacts, legal landing, rounds, drills, pause and first-trigger alignment.");
+            Debug.Log("[Shuttle Test] PASS " + checks + " checks: XR and BWF-dimension court, ASTROX published weight/tension and estimated geometry/inertia, multi-difficulty physical AI, safe pause controls, varied stationary feeds and repeatable feeder, bidirectional swept contact, grip-speed response, forward-swing regression, mass-scaled passive energy, 25-lb equipment defaults and guarded adjustments, finite string/cork compliance and signed slice spin, sweet spot, stationary blocks, drag/tumble stability, technique features and real impacts, legal landing, rounds, explicit 175 cm virtual stature without XR pose/scale edits, real-height drill mode and first-trigger alignment.");
             EditorSceneManager.OpenScene(BadmintonProjectBuilder.ScenePath);
         }
 
@@ -78,6 +92,114 @@ namespace ViveShuttleVR.Editor
             Require(ClearsNet(overheadSource, overheadLaunch), "Overhead feed hits net");
         }
 
+        private struct TrackedTransformSnapshot
+        {
+            public Vector3 position, localPosition, localScale, worldScale;
+            public Quaternion rotation, localRotation;
+            public TrackedTransformSnapshot(Transform transform)
+            {
+                position=transform.position; rotation=transform.rotation;
+                localPosition=transform.localPosition; localRotation=transform.localRotation;
+                localScale=transform.localScale; worldScale=transform.lossyScale;
+            }
+            public void RequireUnchanged(Transform transform,string label)
+            {
+                Require(Vector3.Distance(transform.position,position)<.00001f && Quaternion.Angle(transform.rotation,rotation)<.01f,
+                    label+" world pose changed during height calibration");
+                Require(Vector3.Distance(transform.localPosition,localPosition)<.00001f && Quaternion.Angle(transform.localRotation,localRotation)<.01f,
+                    label+" tracked local pose changed during height calibration");
+                Require(Vector3.Distance(transform.localScale,localScale)<.00001f && Vector3.Distance(transform.lossyScale,worldScale)<.00001f,
+                    label+" scale changed during height calibration");
+            }
+        }
+
+        private static void TestPlayerHeight(BadmintonSession session)
+        {
+            Transform head=session.playerCamera.transform;
+            Transform origin=head.parent;
+            Require(origin!=null,"Height fixture needs the tracked XR origin");
+            Vector3 savedHeadPosition=head.position;
+            Quaternion savedHeadRotation=head.rotation;
+            bool savedSimulation=session.simulatePlayerHeight;
+            float savedStature=session.simulatedStature;
+            PracticeMode savedMode=session.mode;
+            PracticeDrill savedDrill=session.drill;
+            FeedPattern savedPattern=session.feedPattern;
+            float savedReach=session.seatedReach;
+            var originPose=new TrackedTransformSnapshot(origin);
+            var gripPoses=new TrackedTransformSnapshot[session.rackets.Length];
+            var racketHeadPoses=new TrackedTransformSnapshot[session.rackets.Length];
+            for(int i=0;i<session.rackets.Length;i++)
+            {
+                gripPoses[i]=new TrackedTransformSnapshot(session.rackets[i].transform);
+                racketHeadPoses[i]=new TrackedTransformSnapshot(session.rackets[i].head);
+            }
+            try
+            {
+                session.shuttle.Stop();
+                session.mode=PracticeMode.Training;
+                session.feedPattern=FeedPattern.Fixed;
+                session.seatedReach=.62f;
+                session.simulatedStature=1.75f;
+                Require(Mathf.Abs(BadmintonSession.SimulatedEyeBelowCrown-.12f)<.0001f,
+                    "Simulated stature-to-eye offset must remain explicit");
+                foreach(bool simulate in new[]{false,true})
+                foreach(float realEye in new[]{1.25f,1.60f,1.85f})
+                {
+                    session.simulatePlayerHeight=simulate;
+                    head.SetPositionAndRotation(new Vector3(1.4f,realEye,-.6f),Quaternion.Euler(8f,40f,0f));
+                    var headPose=new TrackedTransformSnapshot(head);
+                    Require(session.Recenter(),"Height-mode recenter failed");
+                    float expectedEye=simulate?1.63f:realEye;
+                    float expectedFloor=simulate?realEye-1.63f:0f;
+                    foreach(PracticeDrill drill in new[]{PracticeDrill.Rally,PracticeDrill.NetTouch,PracticeDrill.Overhead})
+                    {
+                        session.SetDrill(drill);
+                        Require(session.drill==drill,"Height fixture could not switch paused training drill");
+                        string label="height mode="+simulate+" real eye="+realEye+" drill="+drill;
+                        Vector3 localEye=session.court.InverseTransformPoint(head.position);
+                        float playerZ=drill==PracticeDrill.NetTouch?2.4f:drill==PracticeDrill.Overhead?1.2f:0f;
+                        float offsetY=drill==PracticeDrill.NetTouch?-.16f:drill==PracticeDrill.Overhead?.22f:-.18f;
+                        Require(Mathf.Abs(localEye.y-expectedEye)<.0001f,label+" has incorrect virtual eye height");
+                        Require(Mathf.Abs(localEye.x)<.0001f && Mathf.Abs(localEye.z-playerZ)<.0001f,
+                            label+" has incorrect stationary court alignment");
+                        Require(Mathf.Abs(session.court.position.y-expectedFloor)<.0001f,label+" has incorrect floor offset");
+                        Require(Mathf.Abs(session.reachMarker.localPosition.y-(expectedEye+offsetY))<.0001f &&
+                            Mathf.Abs(session.reachMarker.localPosition.z-playerZ-.62f)<.0001f,
+                            label+" reachable target ignores virtual eye height");
+                        Vector3 worldReach=session.reachMarker.position-head.position;
+                        Require(Mathf.Abs(worldReach.y-offsetY)<.0001f &&
+                            Mathf.Abs(Vector3.Dot(worldReach,session.court.forward)-.62f)<.0001f,
+                            label+" shifted physical hand reach with virtual stature");
+                        headPose.RequireUnchanged(head,"Camera / "+label);
+                        originPose.RequireUnchanged(origin,"XR origin / "+label);
+                        for(int i=0;i<session.rackets.Length;i++)
+                        {
+                            gripPoses[i].RequireUnchanged(session.rackets[i].transform,"Controller "+i+" / "+label);
+                            racketHeadPoses[i].RequireUnchanged(session.rackets[i].head,"Racket head "+i+" / "+label);
+                        }
+                        checks += RegulationCourtRegression.VerifyWorldDimensions(session.court);
+                    }
+                }
+                session.simulatedStature=.5f;
+                Require(Mathf.Abs(session.VirtualEyeHeight-1.1f)<.0001f,"Simulated eye minimum guard failed");
+                session.simulatedStature=3f;
+                Require(Mathf.Abs(session.VirtualEyeHeight-2f)<.0001f,"Simulated eye maximum guard failed");
+            }
+            finally
+            {
+                session.shuttle.Stop();
+                head.SetPositionAndRotation(savedHeadPosition,savedHeadRotation);
+                session.simulatePlayerHeight=savedSimulation;
+                session.simulatedStature=savedStature;
+                session.mode=savedMode;
+                session.drill=savedDrill;
+                session.feedPattern=savedPattern;
+                session.seatedReach=savedReach;
+                session.Recenter();
+            }
+        }
+
         private static void TestSweeps()
         {
             Vector3 contact;
@@ -86,7 +208,7 @@ namespace ViveShuttleVR.Editor
             Require(Mathf.Abs(fraction-.5f)<.0001f && contact.magnitude<.0001f, "Sweep contact time incorrect");
             Require(ShuttleMath.SweptFaceHit(Vector3.zero, Vector3.zero, Vector3.back, Vector3.forward, Quaternion.identity, out contact), "Fast moving racket tunneling");
             Require(ShuttleMath.SweptFaceHit(Vector3.back, Vector3.forward, Vector3.zero, Vector3.zero, Quaternion.identity, out contact), "Back racket face does not hit");
-            Require(!ShuttleMath.SweptFaceHit(new Vector3(.4f,0,1), new Vector3(.4f,0,-1), Vector3.zero, Vector3.zero, Quaternion.identity, out contact), "False racket hit outside ellipse");
+            Require(!ShuttleMath.SweptFaceHit(new Vector3(.4f,0,1), new Vector3(.4f,0,-1), Vector3.zero, Vector3.zero, Quaternion.identity, out contact), "False racket hit outside string bed");
             foreach (float sign in new[] { -1f, 1f })
             {
                 Require(!ShuttleMath.SweptFaceHit(Vector3.forward*.01f*sign, Vector3.forward*.03f*sign, Vector3.zero, Vector3.zero, Quaternion.identity, out contact), "Receding shuttle bounced from tolerance zone");
@@ -96,7 +218,7 @@ namespace ViveShuttleVR.Editor
             Require(ShuttleMath.CrossesNet(new Vector3(0,1,3), new Vector3(0,1,4)), "Low shot must hit net");
             Require(!ShuttleMath.CrossesNet(new Vector3(0,2,3), new Vector3(0,2,4)), "High shot should clear net");
             Require(!ShuttleMath.IsInOpponentCourt(new Vector3(3,0,7)), "Wide shot must be out");
-            Require(!ShuttleMath.IsInOpponentCourt(new Vector3(0,0,10)), "Long shot must be out");
+            Require(!ShuttleMath.IsInOpponentCourt(new Vector3(0,0,BadmintonCourt.FarBaseline+.1f)), "Long shot must be out");
         }
 
         private static RacketContact Contact(Vector3 position, Vector3 velocity, Vector3 normal)
@@ -114,16 +236,21 @@ namespace ViveShuttleVR.Editor
             foreach (RacketController racket in session.rackets)
             {
                 racket.ApplyGripAlignment();
+                Require(Vector3.Distance(racket.modelGripCenter,RacketSpecification.GripCenter)<.0001f,
+                    "Controller grip anchor differs from the shared racket model");
+                Require(Vector3.Distance(racket.visual.transform.InverseTransformPoint(racket.head.position),RacketSpecification.HeadCenter)<.0001f,
+                    "Tracked collision head differs from the rendered ASTROX-size geometry");
                 Vector3 modelGrip=racket.visual.transform.TransformPoint(racket.modelGripCenter);
                 Vector3 trackedGrip=racket.transform.TransformPoint(racket.gripPositionOffset);
                 Require(Vector3.Distance(modelGrip,trackedGrip)<.0001f, "Model handle centre is not anchored to controller grip");
                 Require(Vector3.Angle(racket.visual.transform.localRotation*Vector3.up,
                     Quaternion.Euler(racket.gripRotationOffsetEuler)*Vector3.forward)<.01f, "Saved racket tilt survived grip alignment");
             }
-            Vector3 wristTip=RacketController.VelocityAtPoint(Vector3.zero,Vector3.up*10f,Vector3.forward*.365f);
-            Require(Vector3.Distance(wristTip,Vector3.right*3.65f)<.0001f, "Wrist angular motion missing at racket head");
-            Vector3 translated=RacketController.VelocityAtPoint(Vector3.forward*2f,Vector3.up*10f,Vector3.forward*.365f);
-            Require(Vector3.Distance(translated,new Vector3(3.65f,0f,2f))<.0001f, "Grip and head velocities were not composed");
+            float headLever=(RacketSpecification.HeadCenter-RacketSpecification.GripCenter).magnitude;
+            Vector3 wristTip=RacketController.VelocityAtPoint(Vector3.zero,Vector3.up*10f,Vector3.forward*headLever);
+            Require(Vector3.Distance(wristTip,Vector3.right*(10f*headLever))<.0001f, "Wrist angular motion missing at racket head");
+            Vector3 translated=RacketController.VelocityAtPoint(Vector3.forward*2f,Vector3.up*10f,Vector3.forward*headLever);
+            Require(Vector3.Distance(translated,new Vector3(10f*headLever,0f,2f))<.0001f, "Grip and head velocities were not composed");
             Vector3 angular=RacketController.AngularVelocityFromRotation(Quaternion.identity,Quaternion.AngleAxis(90f,Vector3.right),.5f);
             Require(Vector3.Distance(angular,Vector3.right*Mathf.PI)<.0001f, "Angular velocity must be in radians per second");
             angular=RacketController.AngularVelocityFromRotation(Quaternion.Euler(0f,179f,0f),Quaternion.Euler(0f,-179f,0f),.02f);
@@ -161,7 +288,7 @@ namespace ViveShuttleVR.Editor
 
             ImpactResult centered = RacketImpact.Resolve(incoming, strongContact, strict);
             RacketContact offCenter = strongContact;
-            offCenter.point += Vector3.right*.12f;
+            offCenter.point += Vector3.right*(RacketSpecification.HeadHalfWidth*.86f);
             ImpactResult edge = RacketImpact.Resolve(incoming, offCenter, strict);
             Require(edge.hit && edge.quality<centered.quality && edge.outgoingVelocity.magnitude<centered.outgoingVelocity.magnitude, "Off-center contact should lose string-bed energy");
             offCenter.point = Vector3.right*.25f;
@@ -214,11 +341,12 @@ namespace ViveShuttleVR.Editor
             Require(RacketController.HeadVelocityFromPoses(Vector3.one,Vector3.one,frame)==Vector3.zero, "Stationary pose produces velocity");
 
             Vector3 gripPosition=new Vector3(.18f,1.12f,.24f);
-            Vector3 headOffset=Vector3.forward*.365f;
+            float headLever=(RacketSpecification.HeadCenter-RacketSpecification.GripCenter).magnitude;
+            Vector3 headOffset=Vector3.forward*headLever;
             Vector3 wristHeadFrom=gripPosition+headOffset;
             Vector3 wristHeadTo=gripPosition+Quaternion.Euler(0f,10f,0f)*headOffset;
             Vector3 wristVelocity=RacketController.HeadVelocityFromPoses(wristHeadFrom,wristHeadTo,frame);
-            Require(Mathf.Abs(wristVelocity.magnitude-2f*.365f*Mathf.Sin(5f*Mathf.Deg2Rad)/frame)<.0002f, "Fixed-grip wrist rotation is missing from pose head speed");
+            Require(Mathf.Abs(wristVelocity.magnitude-2f*headLever*Mathf.Sin(5f*Mathf.Deg2Rad)/frame)<.0002f, "Fixed-grip wrist rotation is missing from pose head speed");
 
             // Reproduction: the pose swept +6 cm while an asynchronous SDK sample
             // reported -7 m/s. Choosing the face from that velocity made -10.43 m/s
@@ -404,9 +532,9 @@ namespace ViveShuttleVR.Editor
 
         private static void TestClassifier()
         {
-            ShotContext overhead=new ShotContext { position=new Vector3(0f,1.97f,1.82f), eye=new Vector3(0f,1.75f,1.2f),
+            ShotContext overhead=new ShotContext { position=new Vector3(0f,ShuttleMath.NetHeight+.67f,1.82f), eye=new Vector3(0f,ShuttleMath.NetHeight+.45f,1.2f),
                 courtForward=Vector3.forward, distanceToNet=1.78f, heightOverNet=.67f };
-            ShotContext net=new ShotContext { position=new Vector3(0f,1.34f,3.02f), eye=new Vector3(0f,1.5f,2.4f),
+            ShotContext net=new ShotContext { position=new Vector3(0f,ShuttleMath.NetHeight+.04f,3.02f), eye=new Vector3(0f,ShuttleMath.NetHeight+.20f,2.4f),
                 courtForward=Vector3.forward, distanceToNet=.58f, heightOverNet=.04f };
             ImpactResult feature=new ImpactResult { hit=true, quality=1f, outgoingVelocity=new Vector3(0f,-8f,25f), normalSwing=8f, swingSpeed=9f };
             Require(ShotClassifier.Classify(feature,overhead).technique==ShotTechnique.Smash, "Smash feature label");
@@ -568,8 +696,8 @@ namespace ViveShuttleVR.Editor
                 Vector3 crossing;
                 if (ShuttleMath.NetCrossing(before,after,out crossing))
                 {
-                    clearance=crossing.y-ShuttleMath.NetHeight;
-                    if (Mathf.Abs(crossing.x)>2.7f || clearance<=.018f) return false;
+                    clearance=crossing.y-BadmintonCourt.NetHeightAt(crossing.x);
+                    if (Mathf.Abs(crossing.x)>BadmintonCourt.SinglesHalfWidth || clearance<=.018f) return false;
                 }
                 if (after.y>.025f) continue;
                 landing=Vector3.Lerp(before,after,Mathf.Clamp01((before.y-.025f)/Mathf.Max(.00001f,before.y-after.y)));
@@ -614,14 +742,15 @@ namespace ViveShuttleVR.Editor
 
         private static void TestDrills(BadmintonSession session)
         {
+            Require(!session.simulatePlayerHeight,"Real-floor drill fixture must explicitly disable simulated stature");
             session.Recenter();
             Vector3 eyeBefore=session.playerCamera.transform.position;
             Quaternion headBefore=session.playerCamera.transform.rotation;
             session.SetDrill(PracticeDrill.NetTouch);
             Vector3 eye=session.court.InverseTransformPoint(eyeBefore);
-            Require(session.drill==PracticeDrill.NetTouch && Mathf.Abs(eye.z-2.4f)<.001f && Mathf.Abs(eye.y-1.5f)<.001f, "Net drill calibration geometry");
+            Require(session.drill==PracticeDrill.NetTouch && Mathf.Abs(eye.z-2.4f)<.001f && Mathf.Abs(eye.y-eyeBefore.y)<.001f, "Net drill must retain real floor/eye height");
             Vector3 netReach=session.reachMarker.localPosition;
-            Require(Mathf.Abs(Mathf.Abs(netReach.x)-session.feedSide)<.001f && Mathf.Abs(netReach.y-1.34f)<.001f && Mathf.Abs(netReach.z-3.02f)<.001f, "Net drill seated reach");
+            Require(Mathf.Abs(Mathf.Abs(netReach.x)-session.feedSide)<.001f && Mathf.Abs(netReach.y-(eyeBefore.y-.16f))<.001f && Mathf.Abs(netReach.z-3.02f)<.001f, "Net drill reachable target follows real eye height");
             Require(session.playerCamera.transform.position==eyeBefore && Quaternion.Angle(session.playerCamera.transform.rotation,headBefore)<.01f, "Drill moved XR head pose");
             session.StartPractice(XRNode.RightHand);
             session.SetDrill(PracticeDrill.Overhead);
@@ -648,8 +777,8 @@ namespace ViveShuttleVR.Editor
             session.ToggleAssist();
             session.SetDrill(PracticeDrill.Overhead);
             eye=session.court.InverseTransformPoint(eyeBefore);
-            Require(Mathf.Abs(eye.z-1.2f)<.001f && Mathf.Abs(eye.y-1.75f)<.001f, "Overhead drill calibration geometry");
-            Require(Mathf.Abs(session.reachMarker.localPosition.y-1.97f)<.001f && Mathf.Abs(session.reachMarker.localPosition.z-1.82f)<.001f && !session.shuttle.Flying && session.Feeds==0, "Overhead drill reset/reach");
+            Require(Mathf.Abs(eye.z-1.2f)<.001f && Mathf.Abs(eye.y-eyeBefore.y)<.001f, "Overhead drill must retain real floor/eye height");
+            Require(Mathf.Abs(session.reachMarker.localPosition.y-(eyeBefore.y+.22f))<.001f && Mathf.Abs(session.reachMarker.localPosition.z-1.82f)<.001f && !session.shuttle.Flying && session.Feeds==0, "Overhead drill reset/reachable target");
             session.SetDrill(PracticeDrill.Rally);
             session.Recenter();
         }

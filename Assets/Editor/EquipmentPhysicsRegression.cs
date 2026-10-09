@@ -64,6 +64,8 @@ namespace ViveShuttleVR.Editor
             ShuttlePhysicsSettings defaults = new ShuttlePhysicsSettings();
             Require(Mathf.Abs(defaults.mass - .0054f) < .0000001f, "Default mass must be 5.4 grams");
             Require(Mathf.Abs(defaults.stringTensionLbs - 25f) < .0001f, "Default tension must be 25 pounds");
+            // Deliberately wide numerical laboratory sweep, not a claim that
+            // these two tensions are recommended for an ASTROX 100 ZZ frame.
             ShuttlePhysicsSettings soft = Settings(.0054f, 18f), hard = Settings(.0054f, 32f);
             Require(hard.StringbedStiffness > soft.StringbedStiffness, "Higher tension must increase normal stiffness");
             Require(hard.TangentialStiffness > soft.TangentialStiffness, "Higher tension must increase shear stiffness");
@@ -181,9 +183,9 @@ namespace ViveShuttleVR.Editor
             try
             {
                 session.AdjustTension(-100);
-                Require(Mathf.Abs(session.physics.stringTensionLbs - 18f) < .0001f, "Tension minimum clamp");
+                Require(Mathf.Abs(session.physics.stringTensionLbs - 20f) < .0001f, "4U manufacturer minimum tension clamp");
                 session.AdjustTension(100);
-                Require(Mathf.Abs(session.physics.stringTensionLbs - 32f) < .0001f, "Tension maximum clamp");
+                Require(Mathf.Abs(session.physics.stringTensionLbs - 28f) < .0001f, "4U manufacturer maximum tension clamp");
                 session.AdjustMass(-100f);
                 Require(Mathf.Abs(session.physics.mass - .0045f) < .0000001f, "Mass minimum clamp");
                 session.AdjustMass(100f);

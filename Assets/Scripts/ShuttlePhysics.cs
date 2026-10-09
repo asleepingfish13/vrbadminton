@@ -14,7 +14,26 @@ namespace ViveShuttleVR
         public Vector3 wind = Vector3.zero;
         [Range(.3f,.95f)] public float restitution = .82f;
         [Range(.02f,.5f)] public float stringFriction = .30f;
-        [Range(.04f,.2f)] public float effectiveRacketMass = .09f;
+        [Header("ASTROX 100 ZZ - published mass, estimated grip inertia")]
+        public RacketWeightClass racketWeightClass = RacketWeightClass.FourU;
+        public bool useRacketSpecification = true;
+        [SerializeField] private RacketSpecification racketModel = new RacketSpecification();
+        [Tooltip("Legacy scalar fallback only when useRacketSpecification is disabled.")]
+        [Range(.02f,.2f)] public float effectiveRacketMass = .09f;
+        public RacketSpecification RacketModel
+        {
+            get
+            {
+                if (racketModel == null) racketModel = new RacketSpecification();
+                racketModel.weightClass = racketWeightClass;
+                return racketModel;
+            }
+        }
+        public float RacketContactMass(Vector3 headLocalPoint, Vector3 headLocalNormal)
+        {
+            return useRacketSpecification ? RacketModel.EffectiveContactMass(headLocalPoint,headLocalNormal) :
+                Mathf.Clamp(effectiveRacketMass,.02f,.2f);
+        }
         [Header("Reduced-order string bed - lbs is a tuning input, not force in newtons")]
         [Range(18f,32f)] public float stringTensionLbs = 25f;
         public const float CorkRadius = .013f;

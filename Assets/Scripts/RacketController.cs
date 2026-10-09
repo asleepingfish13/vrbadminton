@@ -17,7 +17,7 @@ namespace ViveShuttleVR
         [Tooltip("Fine adjustment about the tracked grip axes, in degrees. Zero is the OpenXR grip baseline.")]
         public Vector3 gripRotationOffsetEuler = Vector3.zero;
         [Tooltip("Centre of the hand-held part of the procedural racket, in model coordinates.")]
-        public Vector3 modelGripCenter = new Vector3(0f, .035f, 0f);
+        public Vector3 modelGripCenter = RacketSpecification.GripCenter;
 
         public bool IsTracked { get; private set; }
         public bool HasMotionSample { get; private set; }
@@ -41,7 +41,8 @@ namespace ViveShuttleVR
         }
 
         private InputDevice device;
-        private bool wasTrigger, wasGrip, wasMenu, wasPad, hadPose;
+        private bool wasTrigger, wasPad, hadPose;
+        private readonly PracticeMenuGesture menuGesture = new PracticeMenuGesture();
         private Vector3 previousGrip;
         private Quaternion previousGripRotation;
         private readonly float[] speedHistory = new float[24];
@@ -87,7 +88,8 @@ namespace ViveShuttleVR
             if (!IsTracked)
             {
                 ResetMotion();
-                wasTrigger = wasGrip = wasMenu = wasPad = false;
+                wasTrigger = wasPad = false;
+                menuGesture.Reset();
                 return;
             }
 
@@ -191,16 +193,16 @@ namespace ViveShuttleVR
         private void HandleButtons()
         {
             bool trigger = Read(CommonUsages.triggerButton, CommonUsages.trigger);
-            bool grip = Read(CommonUsages.gripButton, CommonUsages.grip);
             bool menu, pad;
             device.TryGetFeatureValue(CommonUsages.menuButton, out menu);
             device.TryGetFeatureValue(CommonUsages.primary2DAxisClick, out pad);
             if (session != null)
             {
-                if (menu && !wasMenu) session.Recenter();
-                else if (grip && !wasGrip) session.TogglePause();
-                else if (trigger && !wasTrigger) session.StartPractice(hand);
-                else if (!session.Running && pad && !wasPad)
+                MenuGestureAction action = menuGesture.Step(menu, Time.unscaledDeltaTime);
+                if (action == MenuGestureAction.Recenter) session.Recenter();
+                else if (action == MenuGestureAction.Pause) session.TogglePause();
+                else if (!menu && trigger && !wasTrigger) session.StartPractice(hand);
+                else if (!menu && !session.Running && pad && !wasPad)
                 {
                     Vector2 axis;
                     if (device.TryGetFeatureValue(CommonUsages.primary2DAxis, out axis))
@@ -213,8 +215,6 @@ namespace ViveShuttleVR
                 }
             }
             wasTrigger = trigger;
-            wasGrip = grip;
-            wasMenu = menu;
             wasPad = pad;
         }
 
