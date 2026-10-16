@@ -7,10 +7,10 @@ using UnityEngine.XR.Management;
 
 namespace ViveShuttleVR
 {
-    public enum PracticeMode { AiRally, Training }
+    public enum PracticeMode { AiRally, Training, SinglesMatch }
     public enum EquipmentSetting { Mode, Difficulty, Drill, Tension, RacketWeight, Mass, FeedPattern }
 
-    public sealed class BadmintonSession : MonoBehaviour
+    public sealed partial class BadmintonSession : MonoBehaviour
     {
         public Transform court;
         public Camera playerCamera;
@@ -21,24 +21,31 @@ namespace ViveShuttleVR
         public AudioSource audioSource;
         [Range(0.4f, 0.9f)] public float seatedReach = 0.62f;
         [Range(0.1f, 0.4f)] public float feedSide = 0.22f;
+        [Tooltip("Closer, higher contact targets for seated play; independent of swing-speed assistance. Disable to use the original wider training reach.")]
+        public bool compactSeatedTargets = true;
+        public ShuttleHand shuttleHand;
+        public bool HandServeHeld { get { return heldServeHand != null && shuttle != null && shuttle.Held; } }
         public int roundLength = 20;
         public ShuttlePhysicsSettings physics = new ShuttlePhysicsSettings();
         public PracticeDrill drill = PracticeDrill.Rally;
-        public PracticeMode mode = PracticeMode.AiRally;
+        public PracticeMode mode = PracticeMode.SinglesMatch;
         public OpponentDifficulty Difficulty = OpponentDifficulty.Easy;
         public BadmintonOpponent opponent;
+        public AthletePresentation athletePrefab;
         [Tooltip("Calibrate the court to a virtual standing stature without scaling or overriding tracked head/hand motion.")]
         public bool simulatePlayerHeight = true;
         [Range(1.4f, 2.1f)] public float simulatedStature = 1.75f;
         // Eye-to-crown offset is an avatar convention, not an anthropometric measurement.
         public const float SimulatedEyeBelowCrown = .12f;
         public float VirtualEyeHeight { get { return Mathf.Clamp(simulatedStature - SimulatedEyeBelowCrown, 1.1f, 2.0f); } }
-        public bool IsAiMatch { get { return mode == PracticeMode.AiRally; } }
+        public bool IsAiMatch { get { return mode != PracticeMode.Training; } }
+        public bool IsStandardMatch { get { return mode == PracticeMode.SinglesMatch; } }
         public const int PointsToWin = 7;
-        public int PlayerPoints { get; private set; }
-        public int OpponentPoints { get; private set; }
+        private int practicePlayerPoints, practiceOpponentPoints;
+        public int PlayerPoints { get { return IsStandardMatch ? Singles.PlayerPoints : practicePlayerPoints; } private set { practicePlayerPoints = value; } }
+        public int OpponentPoints { get { return IsStandardMatch ? Singles.OpponentPoints : practiceOpponentPoints; } private set { practiceOpponentPoints = value; } }
         public int RallyStrokes { get; private set; }
-        public bool MatchComplete { get { return PlayerPoints >= PointsToWin || OpponentPoints >= PointsToWin; } }
+        public bool MatchComplete { get { return IsStandardMatch ? Singles.Phase == SinglesPhase.MatchOver : PlayerPoints >= PointsToWin || OpponentPoints >= PointsToWin; } }
         public FeedPattern feedPattern = FeedPattern.Mixed;
         [Tooltip("Mixed rounds repeat this balanced, non-repeating order for comparison tests.")]
         public int feedSeed = 25054;
@@ -54,8 +61,8 @@ namespace ViveShuttleVR
         public EquipmentSetting SelectedSetting { get; private set; }
         public string EquipmentSummary
         {
-            get { return (physics.racketWeightClass == RacketWeightClass.FourU ? "100 ZZ 4U  |  " : "100 ZZ 3U  |  ") + physics.stringTensionLbs.ToString("F0") + " LB  |  " +
-                (physics.mass * 1000f).ToString("F1") + " G  |  ASSIST " + (physics.seatedAssist ? "ON" : "OFF"); }
+            get { return (physics.racketWeightClass == RacketWeightClass.FourU ? "100 ZZ 4U  |  " : "100 ZZ 3U  |  ") + physics.stringTensionLbs.ToString("F0") + " 磅  |  " +
+                (physics.mass * 1000f).ToString("F1") + " 克  |  辅助" + (physics.seatedAssist ? "开启" : "关闭"); }
         }
         private bool xrSession;
         public bool IsVR
@@ -76,6 +83,9 @@ namespace ViveShuttleVR
         private TextMesh equipmentText;
         private int side = 1;
         private float feedTimer;
+        private ShuttleHand heldServeHand;
+        private bool heldReleaseArmed, hasHeldSample;
+        private Vector3 previousHeldPosition, heldReleaseVelocity;
         private FeedKind[] feedSequence;
         private AudioClip hitSound, scoreSound, feedSound;
         private readonly Vector3[] targets = { new Vector3(0f, 0.03f, 7f), new Vector3(-1.6f, 0.03f, 6.2f), new Vector3(1.6f, 0.03f, 8f) };
@@ -91,8 +101,9 @@ namespace ViveShuttleVR
             CreateAlignmentHint();
             shuttle.Stop();
             UpdateHud();
-            statusText.text = "LOOK STRAIGHT AHEAD";
-            detailText.text = "TRIGGER: ALIGN + START    HOLD MENU / R: RECENTER";
+            statusText.text = "请面向正前方";
+            detailText.text = IsStandardMatch ? "正式单打 / 先完成掷币选择\n长按菜单键：重新校准" :
+                "左扳机：持球  |  右扳机：自动开始\n长按菜单键：重新校准";
             var inputs = new List<XRInputSubsystem>();
             SubsystemManager.GetInstances(inputs);
             foreach (XRInputSubsystem input in inputs)
@@ -106,8 +117,8 @@ namespace ViveShuttleVR
                 playerCamera.transform.localRotation = Quaternion.identity;
             }
             Debug.Log("[Shuttle VR] Startup mode=" + (IsVR ? "VR" : "Desktop") +
-                "; HeadPoseDriver=" + playerCamera.GetComponent<TrackedPoseDriver>().enabled + "; ContactModel=AstroxAiRegulationV4" +
-                "; Equipment=" + EquipmentSummary + "; Mode=" + mode + "; AI=" + Difficulty + "; VirtualStature=" + simulatedStature.ToString("F2") + "; Court=13.40x6.10; PlayArea=Stationary");
+                "; HeadPoseDriver=" + playerCamera.GetComponent<TrackedPoseDriver>().enabled + "; ContactModel=LowerGripActiveAiV5" +
+                "; Equipment=" + EquipmentSummary + "; Mode=" + mode + "; AI=" + Difficulty + "; VirtualStature=" + simulatedStature.ToString("F2") + "; CompactSeated=" + compactSeatedTargets + "; LeftHandServe=" + (shuttleHand != null) + "; Court=13.40x6.10; PlayArea=Stationary; Rules=BWF21SmallSpaceV6");
             // Show the idle opponent ahead once tracking is stable. The first
             // deliberate start press still calibrates again to the chosen forward.
             float stable = 0f;
@@ -145,28 +156,29 @@ namespace ViveShuttleVR
                 if (Input.GetKeyDown(KeyCode.Equals) || Input.GetKeyDown(KeyCode.KeypadPlus)) AdjustMass(.1f);
                 if (Input.GetKeyDown(KeyCode.Backspace)) ResetEquipment();
                 if (Input.GetKeyDown(KeyCode.M)) SetFeedPattern(feedPattern == FeedPattern.Mixed ? FeedPattern.Fixed : FeedPattern.Mixed);
-                if (Input.GetKeyDown(KeyCode.F4)) SetMode(IsAiMatch ? PracticeMode.Training : PracticeMode.AiRally);
+                if (Input.GetKeyDown(KeyCode.F4)) SetMode(NextMode());
                 if (Input.GetKeyDown(KeyCode.F5)) SetDifficulty(OpponentDifficulty.Easy);
                 if (Input.GetKeyDown(KeyCode.F6)) SetDifficulty(OpponentDifficulty.Club);
                 if (Input.GetKeyDown(KeyCode.F7)) SetDifficulty(OpponentDifficulty.Advanced);
                 if (Input.GetKeyDown(KeyCode.B)) SetRacketWeight(physics.racketWeightClass == RacketWeightClass.FourU ? RacketWeightClass.ThreeU : RacketWeightClass.FourU);
+                if (Input.GetKeyDown(KeyCode.H)) SetCompactTargets(!compactSeatedTargets);
             }
             if (!Running) return;
-            bool controllerReady = !IsVR;
-            foreach (RacketController racket in rackets) controllerReady |= racket.IsTracked;
+            bool controllerReady = !IsVR || RequiredControllersTracked();
             if (!HeadReady() || !controllerReady)
             {
                 Running = false;
-                statusText.text = "TRACKING PAUSED";
-                detailText.text = "WEAR HEADSET / TURN ON CONTROLLER - TRIGGER TO RESUME";
+                statusText.text = "追踪中断，已暂停";
+                detailText.text = "请戴好头显并开启控制器\n恢复追踪后按右扳机继续";
                 return;
             }
-            if (!shuttle.Flying)
+            if (IsStandardMatch && AdvanceStandardInterval(Time.deltaTime)) return;
+            if (!shuttle.Flying && !HandServeHeld)
             {
                 feedTimer -= Time.deltaTime;
                 if (feedTimer <= 0f) Serve();
             }
-            if (IsAiMatch && opponent != null && !shuttle.Returned) opponent.Idle(Time.deltaTime);
+            if (IsAiMatch && opponent != null && (!IsStandardMatch || standardServiceDelivered) && (!shuttle.Flying || !shuttle.Returned)) opponent.Idle(Time.deltaTime);
         }
 
         private bool TryGetHeadWorldPose(out Vector3 eye, out Quaternion rotation)
@@ -194,14 +206,14 @@ namespace ViveShuttleVR
             if (!TryGetHeadWorldPose(out eye, out headRotation))
             {
                 Running = false;
-                statusText.text = "WAIT FOR HEADSET TRACKING";
+                statusText.text = "等待头显恢复追踪";
                 return false;
             }
             Vector3 forward = Vector3.ProjectOnPlane(headRotation * Vector3.forward, Vector3.up);
             if (forward.sqrMagnitude < 0.01f)
             {
                 Running = false;
-                statusText.text = "LOOK FORWARD, THEN HOLD MENU / R";
+                statusText.text = "面向正前方，再长按菜单键或按 R";
                 return false;
             }
             forward.Normalize();
@@ -216,9 +228,13 @@ namespace ViveShuttleVR
             if (alignmentHint != null) alignmentHint.gameObject.SetActive(false);
             Score = Feeds = Hits = Combo = 0;
             PlayerPoints = OpponentPoints = RallyStrokes = 0;
-            if (opponent != null) opponent.ResetRally();
+            ResetStandardMatch();
+            if (opponent != null) opponent.ResetMatch();
             feedSequence = PracticeFeed.BalancedSequence(roundLength, feedSeed);
             LastFeedProfile = new FeedProfile();
+            heldServeHand = null;
+            heldReleaseArmed = hasHeldSample = false;
+            heldReleaseVelocity = Vector3.zero;
             shuttle.Stop();
             landingMarker.gameObject.SetActive(false);
             LastShot = new ShotReadout();
@@ -227,36 +243,68 @@ namespace ViveShuttleVR
             targetMarker.localPosition = currentTarget;
             PositionReachMarker();
             UpdateHud();
-            statusText.text = IsAiMatch ? "AI " + Difficulty.ToString().ToUpperInvariant() + " / FIRST TO 7" : DrillLabel() + " / " + roundLength + " SHUTTLES";
+            statusText.text = IsAiMatch ? "AI " + GameLocalization.Difficulty(Difficulty) + " / 先得 7 分获胜" : DrillLabel() + " / " + roundLength + " 球";
             ShowSettingsHelp();
+            if (IsStandardMatch) ShowStandardToss();
             Debug.Log("[Shuttle VR] Recentered from current head pose. CourtYaw=" + court.eulerAngles.y.ToString("F1") +
-                "; HeadYaw=" + headRotation.eulerAngles.y.ToString("F1") + "; Eye=" + eye + "; VirtualEye=" + court.InverseTransformPoint(eye).y.ToString("F2") + "; Reach=" + seatedReach.ToString("F2") + "m");
+                "; HeadYaw=" + headRotation.eulerAngles.y.ToString("F1") + "; Eye=" + eye + "; VirtualEye=" + court.InverseTransformPoint(eye).y.ToString("F2") +
+                "; CompactSeated=" + compactSeatedTargets + "; ContactTarget=" + reachMarker.localPosition.ToString("F3"));
             return true;
         }
 
         public void StartPractice(XRNode selectedHand)
         {
+            if (IsStandardMatch) { StartStandardPractice(); return; }
             if (!HeadReady()) return;
             if (Running) return;
             // Always align a new round at the actual start press, even if a
             // previous menu calibration happened while the player was turned.
             // Resuming an in-progress round must NOT rotate the world.
-            bool newRound = !calibrated || Feeds == 0 || (IsAiMatch ? MatchComplete : Feeds >= roundLength && !shuttle.Flying);
+            bool newRound = !calibrated || (Feeds == 0 && !HandServeHeld) || (IsAiMatch ? MatchComplete : Feeds >= roundLength && !shuttle.Flying);
             if (newRound && !Recenter()) return;
             side = selectedHand == XRNode.LeftHand ? -1 : 1;
             if (!shuttle.Flying) PositionReachMarker();
             Running = true;
             feedTimer = 1.2f;
-            statusText.text = shuttle.Flying ? "RESUMED" : "GET READY";
-            detailText.text = "STAY IN PLACE - SMALL SWINGS - CHECK REAL ARM CLEARANCE";
+            statusText.text = shuttle.Flying ? "已继续" : "请准备";
+            detailText.text = "保持原位，小幅挥拍\n确认现实中的手臂活动范围内没有障碍物";
         }
 
         public void TogglePause()
         {
+            if (IsStandardMatch && !Running)
+            {
+                if (standardTossPending) { ShowStandardToss(); return; }
+                if (Singles.Phase == SinglesPhase.MidGameInterval || Singles.Phase == SinglesPhase.GameInterval)
+                {
+                    // Resuming a paused rest is not agreement to skip it or to
+                    // reposition the court. Only the explicit ready trigger is.
+                    if (!HeadReady() || (IsVR && !RequiredControllersTracked())) return;
+                    Running = true;
+                    statusText.text = "继续间歇";
+                    return;
+                }
+                if (Singles.Phase != SinglesPhase.Rally)
+                {
+                    detailText.text = MatchComplete ? "右扳机：开始新比赛" : "右扳机：确认站位，准备下一球";
+                    return;
+                }
+            }
             if (!Running) { StartPractice(side < 0 ? XRNode.LeftHand : XRNode.RightHand); return; }
             Running = false;
-            statusText.text = "PAUSED";
+            heldReleaseArmed = hasHeldSample = false;
+            heldReleaseVelocity = Vector3.zero;
+            statusText.text = "已暂停";
             ShowSettingsHelp();
+        }
+
+        private bool RequiredControllersTracked()
+        {
+            bool ready = false;
+            foreach (RacketController racket in rackets)
+                if (racket != null && racket.IsTracked && (!IsStandardMatch || racket.CanStrike)) ready = true;
+            return ready && (!IsStandardMatch || !HandServeHeld ||
+                (heldServeHand.source != null && heldServeHand.source.IsTracked));
         }
 
         private Vector3 ReachLocal()
@@ -265,6 +313,9 @@ namespace ViveShuttleVR
             Quaternion rotation;
             TryGetHeadWorldPose(out worldEye, out rotation);
             Vector3 eye = court.InverseTransformPoint(worldEye);
+            if (IsAiMatch) return court.InverseTransformPoint(GetOpponentTarget(0));
+            if (compactSeatedTargets)
+                return PracticeFeed.Fixed(drill, side, eye, PlayerCourtZ, seatedReach, feedSide, true).targetLocal;
             float height = eye.y + (drill == PracticeDrill.Overhead ? .22f : drill == PracticeDrill.NetTouch ? -.16f : -.18f);
             return new Vector3(side * feedSide, Mathf.Max(.65f, height), PlayerCourtZ + seatedReach);
         }
@@ -276,24 +327,117 @@ namespace ViveShuttleVR
             alignmentHint = new GameObject("Look forward to align - startup hint").AddComponent<TextMesh>();
             alignmentHint.transform.SetParent(playerCamera.transform, false);
             alignmentHint.transform.localPosition = new Vector3(0f, -0.10f, 1.4f);
-            alignmentHint.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
-            alignmentHint.GetComponent<Renderer>().sharedMaterial = alignmentHint.font.material;
             alignmentHint.fontSize = 72;
             alignmentHint.characterSize = 0.010f;
             alignmentHint.anchor = TextAnchor.MiddleCenter;
             alignmentHint.alignment = TextAlignment.Center;
             alignmentHint.color = new Color(0.4f, 1f, 0.85f);
-            alignmentHint.text = "LOOK STRAIGHT AHEAD\nTRIGGER: ALIGN COURT + START";
+            GameLocalization.ApplyFont(alignmentHint);
+            alignmentHint.text = IsStandardMatch ? "请面向正前方\n正式单打 / 等待追踪就绪" :
+                "请面向正前方\n左扳机：持球发球\n右扳机：自动开始";
+        }
+
+        public bool BeginHandServe(ShuttleHand hand)
+        {
+            if (hand == null || hand.source == null || !hand.source.IsFreeHand ||
+                !hand.source.IsTracked || hand.source.MenuPressed || shuttle.Flying || !HeadReady()) return false;
+            if (IsStandardMatch)
+            {
+                if (standardTossPending) { ResolveStandardTossChoice(true); return false; }
+                if (!StandardServerIsPlayer || Singles.Phase == SinglesPhase.MidGameInterval ||
+                    Singles.Phase == SinglesPhase.GameInterval || MatchComplete) return false;
+            }
+            if (HandServeHeld)
+            {
+                if (heldServeHand != hand || !Running) return false;
+                heldReleaseArmed = true;
+                hasHeldSample = false;
+                return true;
+            }
+            // The free hand starts a right-handed service, not left-handed
+            // auto feeding. It never steals or replaces an active shuttle.
+            if (!Running) StartPractice(XRNode.RightHand);
+            if (!Running || MatchComplete || (!IsAiMatch && Feeds >= roundLength)) return false;
+            side = 1;
+            heldServeHand = hand;
+            heldReleaseArmed = true;
+            hasHeldSample = false;
+            heldReleaseVelocity = Vector3.zero;
+            if (opponent != null)
+            {
+                if (IsStandardMatch) opponent.PositionForService(Singles.ServerRight);
+                else opponent.ResetRally();
+            }
+            RallyStrokes = 0;
+            landingMarker.gameObject.SetActive(false);
+            shuttle.HoldAt(hand.PinchPoint.position - Vector3.up * .055f);
+            statusText.text = "左手持球中";
+            detailText.text = "松开左扳机，再用右手球拍击球\n短按菜单键：暂停  |  长按：取消并重新校准";
+            if (IsStandardMatch) detailText.text = "松开左扳机后低手发球\n击球时整个球低于 1.15 米，向上飞向对角区";
+            Debug.Log("[Shuttle Serve] Left-hand pinch started; flight and collisions disabled until release.");
+            return true;
+        }
+
+        public void UpdateHeldServe(ShuttleHand hand) { AdvanceHeldServe(hand, Time.unscaledDeltaTime); }
+
+        public void AdvanceHeldServe(ShuttleHand hand, float dt)
+        {
+            if (!HandServeHeld || heldServeHand != hand) return;
+            if (hand.source == null || !hand.source.IsTracked || !HeadReady())
+            {
+                Running = false;
+                heldReleaseArmed = hasHeldSample = false;
+                heldReleaseVelocity = Vector3.zero;
+                statusText.text = "手柄或头显追踪中断，已暂停";
+                detailText.text = "恢复追踪并继续游戏\n重新按住左扳机，再松开发球";
+                return;
+            }
+            if (!Running)
+            {
+                heldReleaseArmed = hasHeldSample = false;
+                heldReleaseVelocity = Vector3.zero;
+                return;
+            }
+            // The hand updates its pinch state before invoking this callback.
+            // Capture the final tracked release pose too, not last frame's hold.
+            if (!hand.IsPinching && !heldReleaseArmed) return;
+            Vector3 position = hand.PinchPoint.position - Vector3.up * .055f;
+            Vector3 delta = position - previousHeldPosition;
+            heldReleaseVelocity = hasHeldSample && dt >= .001f && dt <= .08f && delta.sqrMagnitude < .0625f ?
+                Vector3.ClampMagnitude(delta / dt, 2f) : Vector3.zero;
+            previousHeldPosition = position;
+            hasHeldSample = true;
+            shuttle.HoldAt(position);
+        }
+
+        public bool ReleaseHandServe(ShuttleHand hand)
+        {
+            if (!HandServeHeld || heldServeHand != hand || !Running || !heldReleaseArmed ||
+                hand.source == null || !hand.source.IsTracked || hand.source.MenuPressed || !HeadReady()) return false;
+            if (!shuttle.ReleaseHeld(heldReleaseVelocity)) return false;
+            heldServeHand = null;
+            heldReleaseArmed = hasHeldSample = false;
+            heldReleaseVelocity = Vector3.zero;
+            Feeds++;
+            LastFeedProfile = new FeedProfile { sourceLocal = court.InverseTransformPoint(shuttle.State.position),
+                targetLocal = court.InverseTransformPoint(shuttle.State.position), label = "LEFT HAND SERVE", reachLabel = "FREE DROP" };
+            statusText.text = "轮到你发球，用右手球拍击球";
+            detailText.text = "左手已松开，羽毛球自由下落\n无自动瞄准，也无自动击球";
+            Debug.Log("[Shuttle Serve] Released freely; velocity=" + shuttle.Velocity.ToString("F3"));
+            UpdateHud();
+            return true;
         }
 
         private void Serve()
         {
+            if (HandServeHeld) return;
+            if (IsStandardMatch) { ServeStandardOpponent(); return; }
             if (IsAiMatch) { ServeOpponent(); return; }
             if (Feeds >= roundLength)
             {
                 Running = false;
-                statusText.text = "ROUND COMPLETE / " + Score + " POINTS";
-                detailText.text = "TRIGGER: NEW ROUND    HOLD MENU: RECENTER";
+                statusText.text = "本轮完成 / 得分 " + Score;
+                detailText.text = "右扳机：新一轮\n长按菜单键：重新校准";
                 return;
             }
             currentTarget = TargetForFeed(Feeds);
@@ -308,9 +452,9 @@ namespace ViveShuttleVR
             {
                 if (feedSequence == null || feedSequence.Length != roundLength)
                     feedSequence = PracticeFeed.BalancedSequence(roundLength, feedSeed);
-                LastFeedProfile = PracticeFeed.Build(feedSequence[Feeds], side, eyeLocal, PlayerCourtZ, seatedReach, Feeds);
+                LastFeedProfile = PracticeFeed.Build(feedSequence[Feeds], side, eyeLocal, PlayerCourtZ, seatedReach, Feeds, compactSeatedTargets);
             }
-            else LastFeedProfile = PracticeFeed.Fixed(drill, side, eyeLocal, PlayerCourtZ, seatedReach, feedSide);
+            else LastFeedProfile = PracticeFeed.Fixed(drill, side, eyeLocal, PlayerCourtZ, seatedReach, feedSide, compactSeatedTargets);
             reachMarker.localPosition = LastFeedProfile.targetLocal;
             // Move only the visible feed machine to its actual launch position.
             // The court and XR origin remain stationary throughout the round.
@@ -320,9 +464,9 @@ namespace ViveShuttleVR
             Vector3 target = court.TransformPoint(LastFeedProfile.targetLocal);
             shuttle.Launch(source, ShuttleMath.SolveLaunch(source, target, LastFeedProfile.duration, physics));
             Feeds++;
-            statusText.text = LastFeedProfile.label + " / " + LastFeedProfile.reachLabel;
-            detailText.text = "WATCH THE MINT RING / STAY IN PLACE\n" +
-                "ARRIVAL " + LastFeedProfile.duration.ToString("F2") + " S  |  GOLD TARGET: YOUR RETURN";
+            statusText.text = GameLocalization.Feed(LastFeedProfile.kind) + " / " + GameLocalization.Reach(LastFeedProfile.reachLabel);
+            detailText.text = "观察浅绿色圆环，保持原位\n" +
+                "来球约 " + LastFeedProfile.duration.ToString("F2") + " 秒  |  回球瞄准金色目标";
             Debug.Log("[Shuttle Feed] " + LastFeedProfile.label + "; source=" + LastFeedProfile.sourceLocal.ToString("F2") +
                 "; target=" + LastFeedProfile.targetLocal.ToString("F2") + "; seconds=" + LastFeedProfile.duration.ToString("F2"));
             Play(feedSound, 0.12f);
@@ -339,6 +483,12 @@ namespace ViveShuttleVR
             float forward = Difficulty == OpponentDifficulty.Easy ? .62f : .60f + phase * .06f;
             float lateral = Difficulty == OpponentDifficulty.Easy ? .17f : .16f + phase * .025f;
             float vertical = Difficulty == OpponentDifficulty.Easy ? -.10f : -.08f + phase * .09f;
+            if (compactSeatedTargets)
+            {
+                forward = Difficulty == OpponentDifficulty.Easy ? PracticeFeed.CompactReach : .44f + phase * .04f;
+                lateral = Difficulty == OpponentDifficulty.Easy ? PracticeFeed.CompactSide : .14f + phase * .02f;
+                vertical = Difficulty == OpponentDifficulty.Easy ? PracticeFeed.CompactHeight : .05f + phase * .05f;
+            }
             Vector3 target = localEye + new Vector3(side * lateral, vertical, forward);
             reachMarker.localPosition = target;
             return court.TransformPoint(target);
@@ -363,8 +513,8 @@ namespace ViveShuttleVR
             Feeds++;
             LastFeedProfile = new FeedProfile { sourceLocal = court.InverseTransformPoint(source),
                 targetLocal = court.InverseTransformPoint(target), duration = duration, label = "AI PRACTICE STARTER" };
-            statusText.text = "AI " + Difficulty.ToString().ToUpperInvariant() + " / RETURN TO PLAYER";
-            detailText.text = "FIRST TO 7 / PRACTICE RULES\nSTAY IN PLACE / TAP MENU TO PAUSE";
+            statusText.text = "AI " + GameLocalization.Difficulty(Difficulty) + " / 向你附近发球";
+            detailText.text = "练习规则：先得 7 分获胜\n保持原位，短按菜单键暂停";
             Debug.Log("[Shuttle AI] Practice starter; difficulty=" + Difficulty + "; target=" + target);
             Play(feedSound, .12f);
             UpdateHud();
@@ -374,8 +524,8 @@ namespace ViveShuttleVR
         {
             RallyStrokes++;
             LastNetClearance = float.NaN;
-            statusText.text = "AI RETURN / " + Difficulty.ToString().ToUpperInvariant();
-            detailText.text = "WATCH THE MINT RING / STAY IN PLACE\nRALLY " + RallyStrokes + " / TAP MENU: PAUSE";
+            statusText.text = "AI 回球 / " + GameLocalization.Difficulty(Difficulty);
+            detailText.text = "观察浅绿色圆环，保持原位\n本回合 " + RallyStrokes + " 拍  |  短按菜单键：暂停";
             Play(hitSound, .15f);
             Debug.Log("[Shuttle AI] Physical return; difficulty=" + Difficulty + "; speed=" + impact.outgoingVelocity.magnitude.ToString("F2") +
                 "; dwellMs=" + (impact.contactDuration*1000f).ToString("F3") + "; rally=" + RallyStrokes);
@@ -391,14 +541,16 @@ namespace ViveShuttleVR
 
         private void FinishAiPoint(string reason, Vector3 landing, bool playerLastHit)
         {
+            if (IsStandardMatch) { FinishStandardRally(reason, landing, playerLastHit); return; }
+            if (opponent != null) opponent.OnPointEnded();
             bool won = PlayerWinsAiPoint(reason, landing, playerLastHit);
             if (won) PlayerPoints++; else OpponentPoints++;
             Score = PlayerPoints;
             landingMarker.localPosition = new Vector3(landing.x, .035f, landing.z);
             landingMarker.gameObject.SetActive(true);
-            statusText.text = MatchComplete ? (PlayerPoints > OpponentPoints ? "YOU WIN" : "AI WINS") : (won ? "YOUR POINT" : "AI POINT");
-            detailText.text = MatchComplete ? "FIRST TO 7 COMPLETE / TRIGGER: NEW MATCH" :
-                "RALLY " + RallyStrokes + " / TAP MENU: PAUSE / HOLD MENU: RESET";
+            statusText.text = MatchComplete ? (PlayerPoints > OpponentPoints ? "你获胜了" : "AI 获胜") : (won ? "你得分" : "AI 得分");
+            detailText.text = MatchComplete ? "7 分制对局结束\n右扳机：开始新对局" :
+                "本回合 " + RallyStrokes + " 拍\n短按菜单键：暂停  |  长按：重置";
             feedTimer = 2.3f;
             if (MatchComplete) Running = false;
             UpdateHud();
@@ -416,7 +568,7 @@ namespace ViveShuttleVR
             Hits++;
             if (IsAiMatch) { RallyStrokes++; opponent.BeginTracking(shuttle.State); }
             else Score += 5;
-            statusText.text = ShotClassifier.Label(LastShot.technique);
+            statusText.text = GameLocalization.Technique(LastShot.technique);
             detailText.text = ShotMetrics();
             Debug.Log("[Shuttle Contact] " + ShotClassifier.Label(LastShot.technique) +
                 "; grip-based head speed=" + impact.swingSpeed.ToString("F2") +
@@ -440,15 +592,15 @@ namespace ViveShuttleVR
         public void OnNetCrossing(float clearance)
         {
             LastNetClearance = clearance;
-            detailText.text = ShotMetrics() + "\nNET CLEARANCE " + (clearance * 100f).ToString("F0") + " CM";
+            detailText.text = ShotMetrics() + "\n过网余量 " + (clearance * 100f).ToString("F0") + " 厘米";
         }
 
         private string ShotMetrics()
         {
-            return "RACKET " + LastShot.swingSpeed.ToString("F1") + " M/S  >  SHUTTLE " +
-                (LastShot.speed * 3.6f).ToString("F0") + " KM/H\nANGLE " + LastShot.launchAngle.ToString("F0") +
-                " DEG  |  SPIN " + LastShot.spinRpm.ToString("F0") + " RPM  |  CENTER " + (LastShot.quality * 100f).ToString("F0") + "%\n" +
-                "CONTACT " + LastShot.contactMilliseconds.ToString("F2") + " MS  |  SLIP " + (LastShot.slidingFraction*100f).ToString("F0") + "%";
+            return "挥速 " + LastShot.swingSpeed.ToString("F1") + " 米/秒  >  球速 " +
+                (LastShot.speed * 3.6f).ToString("F0") + " 千米/小时\n仰角 " + LastShot.launchAngle.ToString("F0") +
+                " 度  |  旋转 " + LastShot.spinRpm.ToString("F0") + " 转/分  |  甜区 " + (LastShot.quality * 100f).ToString("F0") + "%\n" +
+                "接触 " + LastShot.contactMilliseconds.ToString("F2") + " 毫秒  |  滑移 " + (LastShot.slidingFraction*100f).ToString("F0") + "%";
         }
 
         public void CycleDrill(int direction)
@@ -472,10 +624,20 @@ namespace ViveShuttleVR
         {
             if (!CanAdjustSettings()) return;
             physics.seatedAssist = !physics.seatedAssist;
-            statusText.text = "ASSIST " + (physics.seatedAssist ? "ON / SPEED GAIN + CONTACT MARGIN" : "OFF / 1:1 SWING SPEED");
+            statusText.text = "辅助" + (physics.seatedAssist ? "开启 / 挥速增益与击球容错" : "关闭 / 原始挥拍速度");
             UpdateHud();
             UpdateQuickGuide();
             ShowSettingsHelp();
+        }
+
+        public void SetCompactTargets(bool enabled)
+        {
+            if (!CanAdjustSettings()) return;
+            compactSeatedTargets = enabled;
+            PositionReachMarker();
+            statusText.text = enabled ? "坐姿近点 / 来球更近、更高" : "原始原地击球范围";
+            // This changes only the next target, never the court or XR pose.
+            detailText.text = "暂停时按 H：切换击球范围\n右扳机：开始";
         }
 
         // Settings are deliberately session-local: Inspector defaults are not
@@ -486,7 +648,7 @@ namespace ViveShuttleVR
             physics.stringTensionLbs = Mathf.Clamp(physics.stringTensionLbs + deltaLbs,
                 RacketSpecification.MinTension(physics.racketWeightClass), RacketSpecification.MaxTension(physics.racketWeightClass));
             SelectedSetting = EquipmentSetting.Tension;
-            EquipmentChanged("TENSION " + physics.stringTensionLbs.ToString("F0") + " LB");
+            EquipmentChanged("拍线磅数 " + physics.stringTensionLbs.ToString("F0") + " 磅");
         }
 
         public void AdjustMass(float deltaGrams)
@@ -496,7 +658,7 @@ namespace ViveShuttleVR
             float grams = Mathf.Round((physics.mass * 1000f + deltaGrams) * 10f) / 10f;
             physics.mass = Mathf.Clamp(grams * .001f, .0045f, .0060f);
             SelectedSetting = EquipmentSetting.Mass;
-            EquipmentChanged("SHUTTLE MASS " + (physics.mass * 1000f).ToString("F1") + " G");
+            EquipmentChanged("羽毛球重量 " + (physics.mass * 1000f).ToString("F1") + " 克");
         }
 
         public void ResetEquipment()
@@ -504,14 +666,14 @@ namespace ViveShuttleVR
             if (!CanAdjustSettings()) return;
             physics.stringTensionLbs = 25f;
             physics.mass = .0054f;
-            EquipmentChanged("EQUIPMENT RESET / 25 LB / 5.4 G");
+            EquipmentChanged("装备已重置 / 25 磅 / 5.4 克");
         }
 
         public void CycleEquipmentSelection()
         {
             if (!CanAdjustSettings()) return;
             SelectedSetting = (EquipmentSetting)(((int)SelectedSetting + 1) % System.Enum.GetValues(typeof(EquipmentSetting)).Length);
-            statusText.text = "SELECTED " + SelectedSettingLabel();
+            statusText.text = "当前选择：" + SelectedSettingLabel();
             ShowSettingsHelp();
         }
 
@@ -519,7 +681,7 @@ namespace ViveShuttleVR
         {
             if (direction == 0 || !CanAdjustSettings()) return;
             int step = direction > 0 ? 1 : -1;
-            if (SelectedSetting == EquipmentSetting.Mode) SetMode(IsAiMatch ? PracticeMode.Training : PracticeMode.AiRally);
+            if (SelectedSetting == EquipmentSetting.Mode) SetMode(NextMode());
             else if (SelectedSetting == EquipmentSetting.Difficulty) SetDifficulty((OpponentDifficulty)(((int)Difficulty + step + 3) % 3));
             else if (SelectedSetting == EquipmentSetting.RacketWeight) SetRacketWeight(physics.racketWeightClass == RacketWeightClass.FourU ? RacketWeightClass.ThreeU : RacketWeightClass.FourU);
             else if (SelectedSetting == EquipmentSetting.Tension) AdjustTension(step);
@@ -532,10 +694,18 @@ namespace ViveShuttleVR
         public void SetMode(PracticeMode next)
         {
             if (!System.Enum.IsDefined(typeof(PracticeMode), next) || !CanAdjustSettings()) return;
+            PracticeMode previousMode = mode;
+            PracticeDrill previousDrill = drill;
+            EquipmentSetting previousSelection = SelectedSetting;
             mode = next;
             if (IsAiMatch) drill = PracticeDrill.Rally;
             SelectedSetting = EquipmentSetting.Mode;
-            Recenter();
+            if (!Recenter())
+            {
+                mode = previousMode;
+                drill = previousDrill;
+                SelectedSetting = previousSelection;
+            }
         }
 
         public void SetDifficulty(OpponentDifficulty next)
@@ -544,7 +714,7 @@ namespace ViveShuttleVR
             Difficulty = next;
             SelectedSetting = EquipmentSetting.Difficulty;
             if (opponent != null) opponent.ResetRally();
-            EquipmentChanged("AI DIFFICULTY: " + Difficulty.ToString().ToUpperInvariant());
+            EquipmentChanged("AI 难度：" + GameLocalization.Difficulty(Difficulty));
         }
 
         public void SetRacketWeight(RacketWeightClass next)
@@ -553,7 +723,7 @@ namespace ViveShuttleVR
             physics.racketWeightClass = next;
             physics.stringTensionLbs = Mathf.Clamp(physics.stringTensionLbs, RacketSpecification.MinTension(next), RacketSpecification.MaxTension(next));
             SelectedSetting = EquipmentSetting.RacketWeight;
-            EquipmentChanged(physics.RacketModel.ShortLabel + " / " + (physics.RacketModel.NominalUnstrungMass*1000f).ToString("F0") + " G NOMINAL");
+            EquipmentChanged(physics.RacketModel.ShortLabel + " / 标称 " + (physics.RacketModel.NominalUnstrungMass*1000f).ToString("F0") + " 克");
         }
 
         public void SetFeedPattern(FeedPattern next)
@@ -561,21 +731,21 @@ namespace ViveShuttleVR
             if (!System.Enum.IsDefined(typeof(FeedPattern), next) || !CanAdjustSettings()) return;
             feedPattern = next;
             SelectedSetting = EquipmentSetting.FeedPattern;
-            EquipmentChanged("FEEDS " + FeedPatternLabel());
+            EquipmentChanged("喂球方式：" + FeedPatternLabel());
         }
 
         private string FeedPatternLabel()
         {
-            if (drill != PracticeDrill.Rally) return "FIXED / SPECIALIST DRILL";
-            return feedPattern == FeedPattern.Mixed ? "MIXED / STATIONARY REACH" : "FIXED";
+            if (drill != PracticeDrill.Rally) return "固定来球 / 专项练习";
+            return feedPattern == FeedPattern.Mixed ? "混合来球 / 原地可及" : "固定来球";
         }
 
         private bool CanAdjustSettings()
         {
-            if (!Running && (shuttle == null || !shuttle.Flying)) return true;
-            statusText.text = "SETTINGS LOCKED / SHUTTLE IN PLAY";
-            detailText.text = Running ? "TAP MENU / P: PAUSE BETWEEN SHUTTLES TO ADJUST" :
-                "TRIGGER: RESUME  |  HOLD MENU / R: RESET TO ADJUST";
+            if (!Running && !HandServeHeld && (shuttle == null || !shuttle.Flying)) return true;
+            statusText.text = "球仍在进行中，暂不能调整设置";
+            detailText.text = Running ? "等本球结束，短按菜单键或按 P\n暂停后即可调整设置" :
+                "右扳机：继续\n长按菜单键或按 R：重置后调整";
             return false;
         }
 
@@ -589,31 +759,42 @@ namespace ViveShuttleVR
 
         private string SelectedSettingLabel()
         {
-            if (SelectedSetting == EquipmentSetting.Mode) return IsAiMatch ? "MODE: AI RALLY" : "MODE: FEED TRAINING";
-            if (SelectedSetting == EquipmentSetting.Difficulty) return "AI: " + Difficulty.ToString().ToUpperInvariant();
-            if (SelectedSetting == EquipmentSetting.RacketWeight) return physics.RacketModel.ShortLabel;
-            if (SelectedSetting == EquipmentSetting.Tension) return "TENSION " + physics.stringTensionLbs.ToString("F0") + " LB";
-            if (SelectedSetting == EquipmentSetting.Mass) return "MASS " + (physics.mass * 1000f).ToString("F1") + " G";
-            if (SelectedSetting == EquipmentSetting.FeedPattern) return "FEEDS " + FeedPatternLabel();
-            return "DRILL / " + DrillLabel();
+            if (SelectedSetting == EquipmentSetting.Mode) return "模式：" + ModeLabel();
+            if (SelectedSetting == EquipmentSetting.Difficulty) return "AI 难度：" + GameLocalization.Difficulty(Difficulty);
+            if (SelectedSetting == EquipmentSetting.RacketWeight) return "球拍：" + physics.RacketModel.ShortLabel;
+            if (SelectedSetting == EquipmentSetting.Tension) return "拍线 " + physics.stringTensionLbs.ToString("F0") + " 磅";
+            if (SelectedSetting == EquipmentSetting.Mass) return "球重 " + (physics.mass * 1000f).ToString("F1") + " 克";
+            if (SelectedSetting == EquipmentSetting.FeedPattern) return "喂球：" + FeedPatternLabel();
+            return "练习：" + DrillLabel();
         }
 
         private void ShowSettingsHelp()
         {
-            if (shuttle != null && shuttle.Flying)
+            if (IsStandardMatch && standardTossPending)
             {
-                detailText.text = "SHUTTLE IN FLIGHT / SETTINGS LOCKED\nTRIGGER: RESUME  |  HOLD MENU / R: RESET TO ADJUST";
+                ShowStandardToss();
+                detailText.text += "\n设置：" + SelectedSettingLabel();
                 return;
             }
-            detailText.text = "SELECTED: " + SelectedSettingLabel() + "  |  TRIGGER: START\n" +
-                "PAD DOWN: SELECT  |  L/R: CHANGE  |  UP: ASSIST";
+            if (HandServeHeld)
+            {
+                detailText.text = "持球中，暂不能调整设置\n先继续游戏，再重新按住并松开左扳机发球";
+                return;
+            }
+            if (shuttle != null && shuttle.Flying)
+            {
+                detailText.text = "球在飞行中，暂不能调整设置\n右扳机：继续  |  长按菜单键或按 R：重置";
+                return;
+            }
+            detailText.text = "当前：" + SelectedSettingLabel() + "\n" +
+                "触控板下：选项  |  左右：调整  |  上：辅助\n右扳机：开始";
         }
 
         private string DrillLabel()
         {
-            return drill == PracticeDrill.NetTouch ? "NET TOUCH / BRUSH" :
-                drill == PracticeDrill.Overhead ? "OVERHEAD / SMASH / DROP" :
-                feedPattern == FeedPattern.Mixed ? "MIXED STATIONARY PRACTICE" : "FIXED FOREHAND RALLY";
+            return drill == PracticeDrill.NetTouch ? "网前放网与搓球" :
+                drill == PracticeDrill.Overhead ? "头顶高球、杀球与吊球" :
+                feedPattern == FeedPattern.Mixed ? "原地混合球路练习" : "固定正手对拉";
         }
 
         private Vector3 TargetForFeed(int index)
@@ -660,10 +841,19 @@ namespace ViveShuttleVR
             Transform card = court.Find("Nearby controls card");
             TextMesh guide = card != null ? card.GetComponentInChildren<TextMesh>() : null;
             if (guide == null) return;
-            guide.characterSize = .0065f;
-            guide.text = "TRIGGER: START / RESUME\nTAP MENU: PAUSE\nHOLD MENU: RESET\n" +
-                "PAUSED: DOWN SELECT\nL/R CHANGE / UP ASSIST\n" +
-                (IsAiMatch ? "AI " + Difficulty.ToString().ToUpperInvariant() + " / FIRST TO 7" : "FEED TRAINING");
+            GameLocalization.ApplyFont(guide);
+            guide.characterSize = .006f;
+            if (IsStandardMatch)
+            {
+                guide.text = "正式单打：21 分，三局两胜\n" + (standardTossPending ?
+                    (standardTossPlayerWon ? "你赢掷币：左先发 / 右先接\n" : "AI 先发：左选 A / 右选 B\n") :
+                    "右扳机：确认准备 / 继续\n左扳机：持球 / 松开发球\n") +
+                    "发球时整球低于 1.15 米\n短按菜单：暂停 / 长按：重置\n暂停后触控板调整设置";
+                return;
+            }
+            guide.text = "左扳机：持球 / 松手发球\n右扳机：自动开始\n短按菜单键：暂停 / 继续\n长按菜单键：重置\n" +
+                "暂停时用触控板调整设置\n" +
+                (IsStandardMatch ? "正式单打：21 分，三局两胜" : IsAiMatch ? "AI " + GameLocalization.Difficulty(Difficulty) + " / 先得 7 分获胜" : "喂球训练");
         }
 
         public void OnFinished(string reason, Vector3 localPosition, bool returned)
@@ -678,23 +868,28 @@ namespace ViveShuttleVR
                 Vector2 offset = new Vector2(localPosition.x - currentTarget.x, localPosition.z - currentTarget.z);
                 bool bullseye = offset.magnitude < 0.85f;
                 Score += bullseye ? 50 : 10;
-                statusText.text = bullseye ? "TARGET HIT!  +50" : "IN!  +10";
+                statusText.text = bullseye ? "命中目标！加 50 分" : "界内好球！加 10 分";
                 Play(scoreSound, 0.2f);
             }
             else
             {
                 Combo = 0;
-                statusText.text = reason == "NET" ? "INTO THE NET / OPEN FACE OR ADD LIFT" : returned ? "OUT / CHECK FACE ANGLE + SPEED" : "MISSED - NEXT ONE COMING";
+                statusText.text = reason == "NET" ? "下网 / 稍微打开拍面或增加上挑" : returned ? "出界 / 留意拍面角度和挥速" : "未接到球，准备下一球";
             }
-            detailText.text = returned ? ShotClassifier.Label(LastShot.technique) + " | " + ShotMetrics() : "TAP MENU: PAUSE    HOLD MENU / R: RESET";
+            detailText.text = returned ? GameLocalization.Technique(LastShot.technique) + "\n" + ShotMetrics() : "短按菜单键：暂停\n长按菜单键或按 R：重置";
             feedTimer = 2.3f;
             UpdateHud();
         }
 
         private void UpdateHud()
         {
-            scoreText.text = IsAiMatch ? "YOU " + PlayerPoints + "  :  " + OpponentPoints + " AI    RALLY " + RallyStrokes :
-                "SCORE " + Score.ToString("000") + "    HIT " + Hits + "/" + Feeds + "    STREAK " + Combo;
+            GameLocalization.ApplyFont(scoreText);
+            GameLocalization.ApplyFont(statusText);
+            GameLocalization.ApplyFont(detailText);
+            scoreText.text = IsAiMatch ? "你 " + PlayerPoints + "  :  " + OpponentPoints + " AI    本回合 " + RallyStrokes + " 拍" :
+                "得分 " + Score.ToString("000") + "    击中 " + Hits + "/" + Feeds + "    连续得分 " + Combo;
+            if (IsStandardMatch) scoreText.text = "局数 " + Singles.PlayerGames + " : " + Singles.OpponentGames +
+                "    比分 " + PlayerPoints + " : " + OpponentPoints;
             if (equipmentText == null)
             {
                 Transform existing = court.Find("Equipment readout");
@@ -704,8 +899,6 @@ namespace ViveShuttleVR
                     equipmentText = new GameObject("Equipment readout").AddComponent<TextMesh>();
                     equipmentText.transform.SetParent(court, false);
                     equipmentText.transform.localPosition = new Vector3(0f, 4.55f, 12.84f);
-                    equipmentText.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
-                    equipmentText.GetComponent<Renderer>().sharedMaterial = equipmentText.font.material;
                     equipmentText.fontSize = 72;
                     equipmentText.characterSize = .034f;
                     equipmentText.anchor = TextAnchor.MiddleCenter;
@@ -713,7 +906,8 @@ namespace ViveShuttleVR
                     equipmentText.color = new Color(.68f, .8f, .83f);
                 }
             }
-            equipmentText.text = EquipmentSummary + (simulatePlayerHeight ? "  |  HEIGHT " + (simulatedStature * 100f).ToString("F0") + " CM" : "  |  TRACKED HEIGHT");
+            GameLocalization.ApplyFont(equipmentText);
+            equipmentText.text = EquipmentSummary + (simulatePlayerHeight ? "  |  身高 " + (simulatedStature * 100f).ToString("F0") + " 厘米" : "  |  实际追踪身高");
         }
 
         public void DesktopSwing(float horizontal)

@@ -27,7 +27,9 @@ namespace ViveShuttleVR.Editor
             TestDistinctFlight();
             TestGroundDepths();
             TestMixedSession(session);
-            Debug.Log("[Feed Test] PASS " + checks + " checks: balanced seeded order, standing/seated real-height and 175 cm virtual-stature reach, physical net clearance and arrival, distinct trajectories and ground depths, full unhit live flights in both height modes, mixed feeds and pause preservation.");
+            TestCompactProfiles();
+            TestCompactSession(session);
+            Debug.Log("[Feed Test] PASS " + checks + " checks: balanced seeded order, preserved normal profiles, compact seated mixed/fixed targets and live physical contacts, real-height and 175 cm virtual-stature reach, physical net clearance and arrival, distinct trajectories and ground depths, full unhit live flights, translated heads, and pause preservation.");
             return checks;
         }
 
@@ -258,6 +260,7 @@ namespace ViveShuttleVR.Editor
             PracticeDrill originalDrill = session.drill;
             PracticeMode originalMode = session.mode;
             bool originalHeightSimulation = session.simulatePlayerHeight;
+            bool originalCompact = session.compactSeatedTargets;
             float originalStature = session.simulatedStature;
             FeedPattern originalPattern = session.feedPattern;
             float originalReach = session.seatedReach;
@@ -268,6 +271,7 @@ namespace ViveShuttleVR.Editor
             try
             {
                 session.mode = PracticeMode.Training;
+                session.compactSeatedTargets = false;
                 session.drill = PracticeDrill.Rally;
                 session.feedPattern = FeedPattern.Mixed;
                 session.seatedReach = .62f;
@@ -368,12 +372,212 @@ namespace ViveShuttleVR.Editor
                 session.drill = originalDrill;
                 session.mode = originalMode;
                 session.simulatePlayerHeight = originalHeightSimulation;
+                session.compactSeatedTargets = originalCompact;
                 session.simulatedStature = originalStature;
                 session.feedPattern = originalPattern;
                 session.seatedReach = originalReach;
                 session.physics.mass = originalMass;
                 session.feedSeed = originalSeed;
                 session.roundLength = originalLength;
+                session.Recenter();
+            }
+        }
+
+        private static void TestCompactProfiles()
+        {
+            Require(Mathf.Abs(PracticeFeed.CompactReach-.44f)<.00001f &&
+                Mathf.Abs(PracticeFeed.CompactSide-.14f)<.00001f &&
+                Mathf.Abs(PracticeFeed.CompactHeight-.04f)<.00001f,
+                "Compact fixed defaults changed from the shared AI/feed comfort profile");
+            foreach(float mass in new[]{.0045f,.0054f,.0060f})
+            foreach(float height in new[]{1.25f,1.6f,1.63f,1.85f})
+            foreach(int hand in new[]{-1,1})
+            foreach(int variant in new[]{0,1,2})
+            foreach(FeedKind kind in Enum.GetValues(typeof(FeedKind)))
+            {
+                Vector3 eye=new Vector3(.24f,height,-.18f);
+                FeedProfile profile=PracticeFeed.Build(kind,hand,eye,0f,.62f,variant,true);
+                string label="compact "+kind+" eye="+height+" mass="+mass+" hand="+hand+" variant="+variant;
+                Vector3 reach=profile.targetLocal-eye;
+                Require(reach.z>=.3599f && reach.z<=.5001f && reach.x*hand>=.1099f && reach.x*hand<=.1701f &&
+                    reach.y>=-.0401f && reach.y<=.2001f,"Compact mixed target escaped closer/higher envelope: "+label);
+                var legacy=PracticeFeed.Build(kind,hand,eye,0f,.62f,variant);
+                Require(profile.targetLocal.z<legacy.targetLocal.z-.05f &&
+                    Mathf.Abs(reach.x)<Mathf.Abs(legacy.targetLocal.x-eye.x),
+                    "Compact profile did not reduce frontal/lateral reach: "+label);
+                if(kind!=FeedKind.Clear)
+                    Require(profile.targetLocal.y>legacy.targetLocal.y+.09f,"Compact low feed was not raised: "+label);
+                Require(profile.kind==kind && profile.sourceLocal==legacy.sourceLocal && profile.duration==legacy.duration,
+                    "Compact feed lost source/type/timing identity: "+label);
+                var settings=new ShuttlePhysicsSettings { mass=mass };
+                ValidateCompactFlight(profile,settings,label);
+                foreach(float arbitraryReach in new[]{.1f,5f})
+                {
+                    var clamped=PracticeFeed.Build(kind,hand,eye,0f,arbitraryReach,variant,true);
+                    Require(clamped.targetLocal==profile.targetLocal,"Legacy reach changed compact safe defaults: "+label);
+                }
+            }
+            foreach(PracticeDrill drill in Enum.GetValues(typeof(PracticeDrill)))
+            foreach(float height in new[]{1.25f,1.6f,1.63f,1.85f})
+            foreach(float mass in new[]{.0045f,.0054f,.0060f})
+            foreach(int hand in new[]{-1,1})
+            {
+                float playerZ=drill==PracticeDrill.NetTouch?2.4f:drill==PracticeDrill.Overhead?1.2f:0f;
+                Vector3 eye=new Vector3(-.21f,height,playerZ+.17f);
+                var profile=PracticeFeed.Fixed(drill,hand,eye,playerZ,.62f,.22f,true);
+                Vector3 reach=profile.targetLocal-eye;
+                float expectedHeight=drill==PracticeDrill.NetTouch?.02f:drill==PracticeDrill.Overhead?.20f:PracticeFeed.CompactHeight;
+                string label="compact fixed "+drill+" eye="+height+" mass="+mass+" hand="+hand;
+                Require(Vector3.Distance(reach,new Vector3(hand*PracticeFeed.CompactSide,expectedHeight,PracticeFeed.CompactReach))<.0001f,
+                    "Compact fixed feed ignored translated head or changed comfortable reach: "+label);
+                var arbitrary=PracticeFeed.Fixed(drill,hand,eye,playerZ,4f,2f,true);
+                Require(arbitrary.targetLocal==profile.targetLocal,"Legacy Inspector values escaped compact fixed envelope: "+label);
+                ValidateCompactFlight(profile,new ShuttlePhysicsSettings { mass=mass },label);
+            }
+            foreach(float height in new[]{1.25f,1.63f,1.85f})
+            {
+                Vector3 eye=new Vector3(0f,height,0f);
+                var settings=new ShuttlePhysicsSettings();
+                var clearProfile=PracticeFeed.Build(FeedKind.Clear,1,eye,0f,.62f,1,true);
+                var smashProfile=PracticeFeed.Build(FeedKind.Smash,1,eye,0f,.62f,1,true);
+                var dropProfile=PracticeFeed.Build(FeedKind.Drop,1,eye,0f,.62f,1,true);
+                var driveProfile=PracticeFeed.Build(FeedKind.Drive,1,eye,0f,.62f,1,true);
+                var netProfile=PracticeFeed.Build(FeedKind.NetShot,1,eye,0f,.62f,1,true);
+                Trajectory clear=Trace(clearProfile,settings),smash=Trace(smashProfile,settings),
+                    drop=Trace(dropProfile,settings),drive=Trace(driveProfile,settings),net=Trace(netProfile,settings);
+                Require(clear.apex>drop.apex+.75f && clear.angle<-65f,"Compact clear lost its high, steep trajectory");
+                Require(smash.launch.y<0f && smash.angle<drive.angle-10f &&
+                    smash.arrival.velocity.magnitude>drive.arrival.velocity.magnitude+.05f,
+                    "Compact defence feed lost its distinct downward/faster approach");
+                Require(drive.angle>-30f && drive.angle<0f,"Compact drive became a lob");
+                Require(drop.angle<drive.angle-20f && drop.arrival.velocity.magnitude<smash.arrival.velocity.magnitude-.5f,
+                    "Compact drop lost its slower/steeper approach");
+                Require(net.arrival.velocity.magnitude<smash.arrival.velocity.magnitude-1f &&
+                    dropProfile.targetLocal.z>clearProfile.targetLocal.z+.08f,"Compact five-type depth/speed variation collapsed");
+            }
+        }
+
+        private static void ValidateCompactFlight(FeedProfile profile,ShuttlePhysicsSettings settings,string label)
+        {
+            Trajectory flight=Trace(profile,settings);
+            Require(Finite(flight.launch) && Finite(flight.arrival.position) && Finite(flight.arrival.velocity),
+                "Compact flight became non-finite: "+label);
+            Require(Vector3.Distance(flight.arrival.position,profile.targetLocal)<.015f,"Compact solver missed comfortable contact: "+label);
+            Require(flight.crossedNet && !flight.hitNet && flight.netHeight>BadmintonCourt.NetHeightAt(flight.netCrossing.x)+.04f,
+                "Compact trajectory does not clear regulation net: "+label);
+            Require(flight.apex<RegulationHallBuilder.HallClearHeight && flight.launch.magnitude<60f && flight.arrival.velocity.magnitude<12f,
+                "Compact trajectory exceeds hall/speed bounds: "+label);
+            Require(flight.arrival.velocity.z<-.1f && flight.arrival.velocity.y<-.1f,
+                "Compact trajectory does not approach on descent: "+label);
+            Vector3 ground; float duration;
+            Require(TryTraceGround(profile,settings,out ground,out duration) && Finite(ground) && duration>profile.duration,
+                "Compact target is reached after the ground: "+label);
+        }
+
+        private static void TestCompactSession(BadmintonSession session)
+        {
+            Transform head=session.playerCamera.transform;
+            Vector3 oldPosition=head.position;
+            Quaternion oldRotation=head.rotation;
+            PracticeMode oldMode=session.mode;
+            PracticeDrill oldDrill=session.drill;
+            FeedPattern oldPattern=session.feedPattern;
+            bool oldHeight=session.simulatePlayerHeight,oldCompact=session.compactSeatedTargets;
+            float oldStature=session.simulatedStature,oldMass=session.physics.mass;
+            RacketController[] oldRackets=session.rackets;
+            int oldLength=session.roundLength,oldSeed=session.feedSeed;
+            MethodInfo serve=typeof(BadmintonSession).GetMethod("Serve",BindingFlags.Instance|BindingFlags.NonPublic);
+            Require(serve!=null,"Compact live feeder entrypoint missing");
+            try
+            {
+                session.mode=PracticeMode.Training;
+                session.compactSeatedTargets=true;
+                session.simulatedStature=1.75f;
+                session.feedSeed=25054;
+                session.rackets=new RacketController[0];
+                foreach(bool simulated in new[]{false,true})
+                foreach(float actualHeight in new[]{1.25f,1.85f})
+                foreach(float mass in new[]{.0045f,.0054f,.0060f})
+                foreach(int hand in new[]{-1,1})
+                foreach(int mode in new[]{0,1,2,3})
+                {
+                    session.simulatePlayerHeight=simulated;
+                    session.physics.mass=mass;
+                    session.feedPattern=mode==0?FeedPattern.Mixed:FeedPattern.Fixed;
+                    session.drill=mode<2?PracticeDrill.Rally:mode==2?PracticeDrill.Overhead:PracticeDrill.NetTouch;
+                    session.roundLength=mode==0?5:1;
+                    head.SetPositionAndRotation(new Vector3(.8f,actualHeight,-.6f),Quaternion.Euler(0f,hand*45f,0f));
+                    Require(session.Recenter(),"Compact live recenter failed");
+                    session.StartPractice(hand<0?XRNode.LeftHand:XRNode.RightHand);
+                    // Simulate a small tracked head translation after calibration.
+                    // Compact profiles must stay relative to the player, not the old origin.
+                    head.position+=session.court.TransformDirection(new Vector3(.10f,0f,-.08f));
+                    Vector3 courtPosition=session.court.position,headPosition=head.position;
+                    Quaternion courtRotation=session.court.rotation,headRotation=head.rotation;
+                    for(int index=0;index<session.roundLength;index++)
+                    {
+                        serve.Invoke(session,null);
+                        FeedProfile profile=session.LastFeedProfile;
+                        string label="compact live "+session.drill+"/"+profile.kind+" mass="+mass+" simulated="+simulated+
+                            " actualEye="+actualHeight+" hand="+hand;
+                        Vector3 offset=session.court.InverseTransformDirection(session.reachMarker.position-head.position);
+                        Require(session.shuttle.Flying && session.Feeds==index+1,"Compact serve did not launch: "+label);
+                        Require(offset.z>=.3599f && offset.z<=.5001f && offset.x*hand>=.1099f && offset.x*hand<=.1701f &&
+                            offset.y>=-.0401f && offset.y<=.2001f,"Compact live target escaped actual translated reach: "+label);
+                        if(mode!=0)
+                        {
+                            float expectedHeight=session.drill==PracticeDrill.NetTouch?.02f:session.drill==PracticeDrill.Overhead?.20f:PracticeFeed.CompactHeight;
+                            Require(Vector3.Distance(offset,new Vector3(hand*PracticeFeed.CompactSide,expectedHeight,PracticeFeed.CompactReach))<.0001f,
+                                "Compact fixed live target differs from the comfort profile: "+label);
+                        }
+                        if(index==0)
+                        {
+                            session.TogglePause();
+                            ShuttleState paused=session.shuttle.State;
+                            session.shuttle.AdvanceFrame(.05f);
+                            Require(session.shuttle.State.position==paused.position && session.shuttle.State.velocity==paused.velocity,
+                                "Compact pause advanced ball: "+label);
+                            session.StartPractice(hand<0?XRNode.LeftHand:XRNode.RightHand);
+                            Require(session.reachMarker.localPosition==profile.targetLocal,"Compact resume moved comfortable target: "+label);
+                        }
+                        for(float time=0f;time<profile.duration-.000001f;)
+                        {
+                            float dt=Mathf.Min(1f/90f,profile.duration-time);
+                            session.shuttle.AdvanceFrame(dt);
+                            time+=dt;
+                        }
+                        Require(session.shuttle.Flying && !session.shuttle.Returned &&
+                            Vector3.Distance(session.court.InverseTransformPoint(session.shuttle.State.position),profile.targetLocal)<.035f,
+                            "Compact live feed failed to reach its physical contact point: "+label);
+                        Vector3 normal=session.court.TransformDirection(new Vector3(0f,.4f,1f)).normalized;
+                        int hits=session.Hits;
+                        Require(session.shuttle.ReturnShot(normal*5f,normal) && session.shuttle.Returned && session.Hits==hits+1,
+                            "Compact comfortable contact was not physically hittable: "+label);
+                        Require(!session.shuttle.ReturnShot(normal*5f,normal),"Compact contact permitted a duplicate hit: "+label);
+                        for(int frame=0;frame<900 && session.shuttle.Flying;frame++) session.shuttle.AdvanceFrame(1f/90f);
+                        Require(!session.shuttle.Flying && session.Hits==hits+1,"Compact physical return did not resolve once: "+label);
+                        Require(session.court.position==courtPosition && Quaternion.Angle(session.court.rotation,courtRotation)<.001f &&
+                            head.position==headPosition && Quaternion.Angle(head.rotation,headRotation)<.001f,
+                            "Compact feed/contact moved camera or court: "+label);
+                    }
+                    serve.Invoke(session,null);
+                    Require(!session.Running,"Compact feed round did not end");
+                }
+            }
+            finally
+            {
+                session.shuttle.Stop();
+                session.mode=oldMode;
+                session.drill=oldDrill;
+                session.feedPattern=oldPattern;
+                session.simulatePlayerHeight=oldHeight;
+                session.compactSeatedTargets=oldCompact;
+                session.simulatedStature=oldStature;
+                session.physics.mass=oldMass;
+                session.rackets=oldRackets;
+                session.roundLength=oldLength;
+                session.feedSeed=oldSeed;
+                head.SetPositionAndRotation(oldPosition,oldRotation);
                 session.Recenter();
             }
         }

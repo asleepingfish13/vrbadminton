@@ -37,6 +37,7 @@ namespace ViveShuttleVR.Editor
             checks=0;
             TestDifficulties();
             TestMovement();
+            TestAnatomicalRoll();
             var court=new GameObject("AI regression temporary court");
             try
             {
@@ -94,6 +95,30 @@ namespace ViveShuttleVR.Editor
             Require(Vector3.Distance(coarse,fine)<.0001f,"Footwork is frame-rate dependent");
         }
 
+        private static void TestAnatomicalRoll()
+        {
+            Vector3 head=new Vector3(.1f,1.9f,6f),shoulder=new Vector3(-.14f,1.36f,6.08f);
+            Vector3 normal=new Vector3(.03f,.3f,-1f).normalized;
+            var contact=new RacketContact { center=head,point=head,surfaceNormal=normal,centerVelocity=normal*8f,
+                faceRotation=BadmintonOpponent.OrientTowardShoulder(normal,head,shoulder) };
+            Require(Vector3.Dot(contact.Normal,normal)>.99999f,"Anatomical roll changed face normal");
+            float best=Vector3.Distance(BadmintonOpponent.GripPosition(contact),shoulder);
+            for (int degrees=0;degrees<360;degrees+=5)
+            {
+                RacketContact alternative=contact;
+                alternative.faceRotation=Quaternion.AngleAxis(degrees,normal)*contact.faceRotation;
+                Require(Vector3.Distance(BadmintonOpponent.GripPosition(alternative),shoulder)>=best-.00001f,
+                    "Chosen roll is not minimum-distance grip");
+            }
+            var settings=BadmintonOpponent.CreateStrictSettings(new ShuttlePhysicsSettings());
+            ShuttleState incoming=ShuttleState.Launch(head,new Vector3(.1f,-3f,3f));
+            ImpactResult rolled=RacketImpact.Resolve(incoming,contact,settings);
+            contact.faceRotation=Quaternion.LookRotation(normal,Vector3.up);
+            ImpactResult upright=RacketImpact.Resolve(incoming,contact,settings);
+            Require(rolled.hit && upright.hit && Vector3.Distance(rolled.outgoingVelocity,upright.outgoingVelocity)<.002f,
+                "Fixed-normal central-hit roll changed physical output");
+        }
+
         private static void TestIntercept(Transform court)
         {
             var settings=BadmintonOpponent.CreateStrictSettings(new ShuttlePhysicsSettings());
@@ -116,8 +141,40 @@ namespace ViveShuttleVR.Editor
             Require(!BadmintonOpponent.FindIntercept(outWide,feet,court,settings,ability).valid,"Out-wide shuttle magically returned");
             ShuttleState netFault=ShuttleState.Launch(new Vector3(0f,.65f,3.4f),new Vector3(0f,0f,8f));
             Require(!BadmintonOpponent.FindIntercept(netFault,feet,court,settings,ability).valid,"AI returns through regulation net");
+            // Incoming legality must match the actual cork/tape collision, not
+            // the deliberately larger 1.60 m margin used to plan AI returns.
+            Vector3 nearNetFeet=new Vector3(0f,0f,4.3f);
+            ShuttleState lowDrive=ShuttleState.Launch(court.TransformPoint(new Vector3(0f,1.55f,3.4f)),
+                court.TransformDirection(new Vector3(0f,.3f,6f)));
+            Vector3 lowCrossing=FirstNetCrossing(lowDrive,court,settings);
+            Require(lowCrossing.y>=BadmintonCourt.NetHeightAt(lowCrossing.x)+.018f && lowCrossing.y<1.575f,
+                "Legal low-drive fixture does not exercise the old over-conservative threshold");
+            Require(BadmintonOpponent.FindIntercept(lowDrive,nearNetFeet,court,settings,ability).valid,
+                "Reachable legal low drive above real tape rejected by AI");
+            foreach (float launchHeight in new[] { 1.53f,1.45f })
+            {
+                ShuttleState blocked=ShuttleState.Launch(court.TransformPoint(new Vector3(0f,launchHeight,3.4f)),
+                    court.TransformDirection(new Vector3(0f,.3f,6f)));
+                Vector3 blockedCrossing=FirstNetCrossing(blocked,court,settings);
+                Require(blockedCrossing.y<BadmintonCourt.NetHeightAt(blockedCrossing.x)+.018f,
+                    "Blocked low-drive fixture does not overlap tape/net");
+                Require(!BadmintonOpponent.FindIntercept(blocked,nearNetFeet,court,settings,ability).valid,
+                    "AI used a through-net prediction without waiting for the real deflection");
+            }
             ShuttleState late=ShuttleState.Launch(new Vector3(-2.4f,.38f,4f),new Vector3(-1f,-6f,.5f));
             Require(!BadmintonOpponent.FindIntercept(late,feet,court,settings,ability).valid,"Unreachable low drop never causes a miss");
+        }
+
+        private static Vector3 FirstNetCrossing(ShuttleState state,Transform court,ShuttlePhysicsSettings settings)
+        {
+            for (int step=0;step<360;step++)
+            {
+                Vector3 previous=court.InverseTransformPoint(state.position);
+                ShuttlePhysics.Integrate(ref state,settings,ShuttlePhysics.Step);
+                Vector3 crossing;
+                if (ShuttleMath.NetCrossing(previous,court.InverseTransformPoint(state.position),out crossing)) return crossing;
+            }
+            throw new InvalidOperationException("[Opponent Test] Low-drive fixture never crosses net");
         }
 
         private static void TestContactPlans(Transform court)

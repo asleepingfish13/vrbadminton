@@ -13,6 +13,13 @@ namespace ViveShuttleVR
         public const float SinglesWidth = 5.18f;
         public const float SinglesHalfWidth = 2.59f;
         public const float LineWidth = .04f;
+        // Numerical comparison only (five micrometres), not a wider line or
+        // gameplay contact margin. float arithmetic makes 3.6f+6.7f differ
+        // from the literal 10.3f; a recentered world/local round-trip adds a
+        // few more ULPs. Unity 2020's tested +/-135 degree corner round-trip
+        // reached 4.822 micrometres; points 10 micrometres outside remained
+        // at least 9.537 micrometres out. Geometry dimensions remain unchanged.
+        public const float BoundaryRoundoffTolerance = .000005f;
         public const float NetZ = 3.6f;
         public const float NearBaseline = NetZ - HalfLength;
         public const float FarBaseline = NetZ + HalfLength;
@@ -81,7 +88,7 @@ namespace ViveShuttleVR
         private static bool IsInCourt(Vector3 p, float halfWidth, float contactRadius)
         {
             if (!Finite(p.x) || !Finite(p.z) || !Finite(contactRadius)) return false;
-            float radius = Mathf.Max(0f, contactRadius);
+            float radius = Mathf.Max(0f, contactRadius) + BoundaryRoundoffTolerance;
             float outsideX = Mathf.Max(0f, Mathf.Abs(p.x)-halfWidth);
             float outsideZ = Mathf.Max(0f, NearBaseline-p.z, p.z-FarBaseline);
             return outsideX*outsideX + outsideZ*outsideZ <= radius*radius;
@@ -89,12 +96,12 @@ namespace ViveShuttleVR
 
         public static bool IsOnFarSinglesSide(Vector3 p, float contactRadius = 0f)
         {
-            return p.z >= NetZ && IsInSingles(p, contactRadius);
+            return p.z >= NetZ-BoundaryRoundoffTolerance && IsInSingles(p, contactRadius);
         }
 
         public static bool IsOnNearSinglesSide(Vector3 p, float contactRadius = 0f)
         {
-            return p.z <= NetZ && IsInSingles(p, contactRadius);
+            return p.z <= NetZ+BoundaryRoundoffTolerance && IsInSingles(p, contactRadius);
         }
 
         public static bool IsInServiceCourt(Vector3 p, bool farSide, bool rightSide, bool doubles)
@@ -104,9 +111,11 @@ namespace ViveShuttleVR
             float limitX = doubles ? DoublesHalfWidth : SinglesHalfWidth;
             float limitZ = doubles ? DoublesLongServiceDistance : HalfLength;
             // Centre line belongs to both adjoining service courts.
-            bool correctHalf = rightSide ? p.x >= -LineWidth*.5f : p.x <= LineWidth*.5f;
-            return correctHalf && Mathf.Abs(p.x) <= limitX &&
-                relativeZ >= ShortServiceDistance && relativeZ <= limitZ;
+            bool correctHalf = rightSide ? p.x >= -LineWidth*.5f-BoundaryRoundoffTolerance :
+                p.x <= LineWidth*.5f+BoundaryRoundoffTolerance;
+            return correctHalf && Mathf.Abs(p.x) <= limitX+BoundaryRoundoffTolerance &&
+                relativeZ >= ShortServiceDistance-BoundaryRoundoffTolerance &&
+                relativeZ <= limitZ+BoundaryRoundoffTolerance;
         }
 
         private static bool Finite(float value)

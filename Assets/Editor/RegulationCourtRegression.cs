@@ -1,4 +1,5 @@
 using System;
+using UnityEditor.SceneManagement;
 using UnityEngine;
 
 namespace ViveShuttleVR.Editor
@@ -6,6 +7,51 @@ namespace ViveShuttleVR.Editor
     public static class RegulationCourtRegression
     {
         private static int checks;
+        public static void VerifyStandalone()
+        {
+            EditorSceneManager.OpenScene(BadmintonProjectBuilder.ScenePath);
+            BadmintonSession session=UnityEngine.Object.FindObjectOfType<BadmintonSession>();
+            if(session==null) throw new InvalidOperationException("Court-only regression scene has no session");
+            LogBoundaryPrecision();
+            Run(session.court);
+        }
+
+        private static void LogBoundaryPrecision()
+        {
+            GameObject fixture=new GameObject("Boundary precision diagnostic");
+            float maximumOvershoot=0f,minimumOutwardGap=float.PositiveInfinity;
+            string worst="none";
+            try
+            {
+                foreach(Vector3 origin in new[]{Vector3.zero,new Vector3(1.4f,-.38f,-.6f),new Vector3(-3.2f,.22f,2.1f)})
+                foreach(float yaw in new[]{-135f,-45f,0f,40f,90f,170f})
+                foreach(float width in new[]{2.59f,3.05f})
+                foreach(float side in new[]{-1f,1f})
+                foreach(float z in new[]{-3.1f,10.3f})
+                {
+                    fixture.transform.SetPositionAndRotation(origin,Quaternion.Euler(0f,yaw,0f));
+                    Vector3 original=new Vector3(width*side,0f,z);
+                    Vector3 roundTrip=fixture.transform.InverseTransformPoint(fixture.transform.TransformPoint(original));
+                    float ox=Mathf.Max(0f,Mathf.Abs(roundTrip.x)-width);
+                    float oz=Mathf.Max(0f,BadmintonCourt.NearBaseline-roundTrip.z,roundTrip.z-BadmintonCourt.FarBaseline);
+                    float overshoot=Mathf.Sqrt(ox*ox+oz*oz);
+                    if(overshoot>maximumOvershoot)
+                    {
+                        maximumOvershoot=overshoot;
+                        worst="origin="+origin+" yaw="+yaw+" local="+PrecisionPoint(original)+" roundTrip="+PrecisionPoint(roundTrip);
+                    }
+                    foreach(Vector3 outward in new[]{Vector3.right*(side*.00001f),Vector3.forward*((z>3.6f?1f:-1f)*.00001f)})
+                    {
+                        Vector3 outside=fixture.transform.InverseTransformPoint(fixture.transform.TransformPoint(original+outward));
+                        float dx=Mathf.Max(0f,Mathf.Abs(outside.x)-width);
+                        float dz=Mathf.Max(0f,BadmintonCourt.NearBaseline-outside.z,outside.z-BadmintonCourt.FarBaseline);
+                        minimumOutwardGap=Mathf.Min(minimumOutwardGap,Mathf.Sqrt(dx*dx+dz*dz));
+                    }
+                }
+            }
+            finally { UnityEngine.Object.DestroyImmediate(fixture); }
+            Debug.Log("[Court Precision] max boundary overshoot="+maximumOvershoot.ToString("R")+"m; min10um-outside gap="+minimumOutwardGap.ToString("R")+"m; worst="+worst);
+        }
         public static int Run(Transform court)
         {
             checks=0;
@@ -60,6 +106,7 @@ namespace ViveShuttleVR.Editor
             Check(!BadmintonCourt.IsInServiceCourt(new Vector3(1f,0f,BadmintonCourt.NetZ+6.4f),true,true,true),"doubles deep service OUT");
             Check(BadmintonCourt.IsInServiceCourt(new Vector3(0f,0f,BadmintonCourt.NetZ-2.2f),false,false,false),"centre line shared by service courts");
             Check(BadmintonCourt.IsInServiceCourt(new Vector3(0f,0f,BadmintonCourt.NetZ-2.2f),false,true,false),"centre line shared other side");
+            TestBoundaryRoundoff(court);
 
             Transform hall=court.Find(RegulationHallBuilder.RootName);
             Check(hall!=null,"regulation hall exists in built scene");
@@ -111,6 +158,99 @@ namespace ViveShuttleVR.Editor
             return checks;
         }
 
+        private static void TestBoundaryRoundoff(Transform court)
+        {
+            Check(BadmintonCourt.BoundaryRoundoffTolerance>0f && BadmintonCourt.BoundaryRoundoffTolerance<=.000005f,
+                "boundary comparison allowance must stay micrometre-scale");
+            // Independent decimal literals reproduce the reported winner bug;
+            // deriving these coordinates from the same constants masks it.
+            Check(BadmintonCourt.IsInSingles(new Vector3(2.59f,0f,10.3f)),"literal far singles corner must be IN");
+            Check(BadmintonCourt.IsOnFarSinglesSide(new Vector3(2.59f,0f,10.3f)),"literal far boundary retains winning side");
+            Check(BadmintonCourt.IsOnNearSinglesSide(new Vector3(-2.59f,0f,-3.1f)),"literal near boundary retains winning side");
+            Check(!BadmintonCourt.IsInSingles(new Vector3(float.NaN,0f,10.3f)),"NaN landing is not a boundary hit");
+            Check(!BadmintonCourt.IsInSingles(new Vector3(0f,0f,float.PositiveInfinity)),"infinite landing is OUT");
+            Check(!BadmintonCourt.IsInSingles(Vector3.zero,float.NaN),"invalid cork footprint is rejected");
+
+            CheckBoundaryAtTransform(court,"current scene");
+            GameObject fixture=new GameObject("Boundary round-trip regression fixture");
+            try
+            {
+                foreach(Vector3 origin in new[]{Vector3.zero,new Vector3(1.4f,-.38f,-.6f),new Vector3(-3.2f,.22f,2.1f)})
+                foreach(float yaw in new[]{-135f,-45f,0f,40f,90f,170f})
+                {
+                    fixture.transform.SetPositionAndRotation(origin,Quaternion.Euler(0f,yaw,0f));
+                    CheckBoundaryAtTransform(fixture.transform,"origin="+origin+" yaw="+yaw);
+                }
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(fixture);
+            }
+        }
+
+        private static void CheckBoundaryAtTransform(Transform frame,string label)
+        {
+            // Ten micrometres (0.01 mm) is already beyond the round-off budget;
+            // centimetre-scale racket assistance must never leak into IN/OUT.
+            const float justOutside=.00001f;
+            foreach(bool doubles in new[]{false,true})
+            foreach(float sign in new[]{-1f,1f})
+            foreach(float baseline in new[]{-3.1f,10.3f})
+            {
+                float width=doubles?3.05f:2.59f;
+                float endSign=baseline>3.6f?1f:-1f;
+                Vector3 corner=new Vector3(sign*width,0f,baseline);
+                Vector3 roundTrip=frame.InverseTransformPoint(frame.TransformPoint(corner));
+                Check(doubles?BadmintonCourt.IsInDoubles(roundTrip):BadmintonCourt.IsInSingles(roundTrip),
+                    "rotated literal corner remains IN / doubles="+doubles+" "+label+" local="+PrecisionPoint(corner)+" roundTrip="+PrecisionPoint(roundTrip));
+                Vector3 outsideSide=corner+Vector3.right*(sign*justOutside);
+                outsideSide=frame.InverseTransformPoint(frame.TransformPoint(outsideSide));
+                Check(!(doubles?BadmintonCourt.IsInDoubles(outsideSide):BadmintonCourt.IsInSingles(outsideSide)),
+                    "10 micrometres beyond sideline remains OUT / "+label);
+                Vector3 outsideEnd=corner+Vector3.forward*(endSign*justOutside);
+                outsideEnd=frame.InverseTransformPoint(frame.TransformPoint(outsideEnd));
+                Check(!(doubles?BadmintonCourt.IsInDoubles(outsideEnd):BadmintonCourt.IsInSingles(outsideEnd)),
+                    "10 micrometres beyond baseline remains OUT / "+label);
+                Vector3 inside=corner-new Vector3(sign*justOutside,0f,endSign*justOutside);
+                inside=frame.InverseTransformPoint(frame.TransformPoint(inside));
+                Check(doubles?BadmintonCourt.IsInDoubles(inside):BadmintonCourt.IsInSingles(inside),
+                    "point just inside corner remains IN / "+label);
+            }
+            foreach(float sign in new[]{-1f,1f})
+            {
+                const float cork=.013f;
+                Vector3 tangent=new Vector3(sign*(2.59f+cork),0f,6f);
+                Vector3 roundTrip=frame.InverseTransformPoint(frame.TransformPoint(tangent));
+                Check(BadmintonCourt.IsInSingles(roundTrip,cork),"touching cork footprint survives round-trip / "+label);
+                Vector3 outside=tangent+Vector3.right*(sign*justOutside);
+                outside=frame.InverseTransformPoint(frame.TransformPoint(outside));
+                Check(!BadmintonCourt.IsInSingles(outside,cork),"cork footprint with a 10 micrometre gap is OUT / "+label);
+            }
+            foreach(bool farSide in new[]{false,true})
+            foreach(bool doubles in new[]{false,true})
+            {
+                float side=farSide?1f:-1f;
+                float width=doubles?3.05f:2.59f;
+                float shortZ=farSide?5.58f:1.62f;
+                float longZ=doubles?(farSide?9.54f:-2.34f):(farSide?10.3f:-3.1f);
+                foreach(float edgeZ in new[]{shortZ,longZ})
+                {
+                    Vector3 edge=new Vector3(width,0f,edgeZ);
+                    edge=frame.InverseTransformPoint(frame.TransformPoint(edge));
+                    Check(BadmintonCourt.IsInServiceCourt(edge,farSide,true,doubles),
+                        "literal service boundary remains IN / "+label);
+                }
+                Vector3 tooShort=new Vector3(1f,0f,shortZ-side*justOutside);
+                tooShort=frame.InverseTransformPoint(frame.TransformPoint(tooShort));
+                Check(!BadmintonCourt.IsInServiceCourt(tooShort,farSide,true,doubles),
+                    "10 micrometres short of service line remains OUT / "+label);
+                Vector3 tooLong=new Vector3(1f,0f,longZ+side*justOutside);
+                tooLong=frame.InverseTransformPoint(frame.TransformPoint(tooLong));
+                Check(!BadmintonCourt.IsInServiceCourt(tooLong,farSide,true,doubles),
+                    "10 micrometres past service line remains OUT / "+label);
+            }
+        }
+
         // Height simulation may translate the whole hall, but must never scale
         // BWF dimensions or decouple rendered posts/lines from physics geometry.
         public static int VerifyWorldDimensions(Transform court)
@@ -150,5 +290,7 @@ namespace ViveShuttleVR.Editor
         }
         private static void Near(float actual,float expected,string label)
         { Check(Mathf.Abs(actual-expected)<.0001f,label+" expected "+expected+" got "+actual); }
+        private static string PrecisionPoint(Vector3 point)
+        { return "("+point.x.ToString("R")+", "+point.y.ToString("R")+", "+point.z.ToString("R")+")"; }
     }
 }

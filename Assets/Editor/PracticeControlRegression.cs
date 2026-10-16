@@ -34,11 +34,13 @@ namespace ViveShuttleVR.Editor
             OpponentDifficulty savedDifficulty=session.Difficulty;
             RacketWeightClass savedWeight=session.physics.racketWeightClass;
             float savedTension=session.physics.stringTensionLbs;
+            bool savedCompact=session.compactSeatedTargets;
             Vector3 savedEye=session.playerCamera.transform.position;
             Quaternion savedHead=session.playerCamera.transform.rotation;
             try
             {
                 session.shuttle.Stop();
+                session.compactSeatedTargets=false;
                 session.playerCamera.transform.SetPositionAndRotation(new Vector3(.3f,1.68f,-.2f),Quaternion.Euler(0f,35f,0f));
                 session.mode=PracticeMode.AiRally; session.drill=PracticeDrill.Rally; session.Difficulty=OpponentDifficulty.Easy;
                 session.Recenter();
@@ -59,6 +61,22 @@ namespace ViveShuttleVR.Editor
                 }
                 Require(session.playerCamera.transform.position==eye&&session.playerCamera.transform.rotation==heading&&session.court.position==courtPosition,
                     "AI targeting moved the player/world");
+                session.compactSeatedTargets=true;
+                foreach(OpponentDifficulty difficulty in Enum.GetValues(typeof(OpponentDifficulty)))
+                {
+                    session.Difficulty=difficulty;
+                    for(int i=0;i<12;i++)
+                    {
+                        Vector3 offset=session.court.InverseTransformDirection(session.GetOpponentTarget(i)-eye);
+                        Require(offset.z>=.3999f&&offset.z<=.4801f&&Mathf.Abs(offset.x)<=.1601f&&offset.y>=-.0001f&&offset.y<=.1001f,
+                            "Compact AI aim leaves closer/higher seated envelope");
+                        if(difficulty==OpponentDifficulty.Easy)
+                            Require(Vector3.Distance(offset,new Vector3(PracticeFeed.CompactSide,PracticeFeed.CompactHeight,PracticeFeed.CompactReach))<.0001f,
+                                "Compact Easy target is not the documented 44 cm forward / 4 cm higher point");
+                    }
+                }
+                Require(session.playerCamera.transform.position==eye&&session.playerCamera.transform.rotation==heading&&session.court.position==courtPosition,
+                    "Compact targeting changed tracked pose or court");
                 session.SetRacketWeight(RacketWeightClass.ThreeU);
                 session.AdjustTension(-100); Require(session.physics.stringTensionLbs==21f,"3U lower tension limit");
                 session.AdjustTension(100); Require(session.physics.stringTensionLbs==29f,"3U upper tension limit");
@@ -66,12 +84,22 @@ namespace ViveShuttleVR.Editor
                 session.AdjustTension(-100); Require(session.physics.stringTensionLbs==20f,"4U lower tension limit");
                 session.ResetEquipment();
                 session.Difficulty=OpponentDifficulty.Easy;
+                session.SetCompactTargets(false);
+                Require(!session.compactSeatedTargets,"Paused empty court must allow wider targets");
+                session.SetCompactTargets(true);
+                Require(session.compactSeatedTargets && session.playerCamera.transform.position==eye &&
+                    session.playerCamera.transform.rotation==heading && session.court.position==courtPosition,
+                    "Compact preset toggle moved the tracked player or court");
                 session.StartPractice(XRNode.RightHand);
                 session.SetMode(PracticeMode.Training); session.SetDifficulty(OpponentDifficulty.Advanced); session.SetRacketWeight(RacketWeightClass.ThreeU);
+                session.SetCompactTargets(false);
+                Require(session.compactSeatedTargets,"Active play changed the contact envelope mid-rally");
                 Require(session.IsAiMatch&&session.Difficulty==OpponentDifficulty.Easy&&session.physics.racketWeightClass==RacketWeightClass.FourU,"Active play settings were mutable");
                 session.shuttle.Launch(session.court.TransformPoint(new Vector3(0f,2f,6f)),session.court.forward*-3f);
                 session.TogglePause();
                 session.SetMode(PracticeMode.Training); session.SetDifficulty(OpponentDifficulty.Advanced);
+                session.SetCompactTargets(false);
+                Require(session.compactSeatedTargets,"Paused in-flight shuttle changed the contact envelope");
                 Require(session.IsAiMatch&&session.Difficulty==OpponentDifficulty.Easy,"Paused in-flight AI settings were mutable");
                 session.Recenter(); session.StartPractice(XRNode.RightHand);
                 for(int i=0;i<BadmintonSession.PointsToWin;i++) session.OnFinished("LAND",new Vector3(0f,.025f,7f),true);
@@ -80,12 +108,22 @@ namespace ViveShuttleVR.Editor
                 Require(!session.MatchComplete&&session.Running&&session.PlayerPoints==0&&session.OpponentPoints==0,"New match retained points");
                 session.OnFinished("MISS",new Vector3(0f,.025f,0f),false);
                 Require(session.OpponentPoints==1,"Missed AI return not scored to AI");
+                session.Recenter();
+                session.SetDrill(PracticeDrill.NetTouch);
+                EquipmentSetting selectionBeforeFailure=session.SelectedSetting;
+                Vector3 floorBeforeFailure=session.court.position;
+                session.playerCamera.transform.rotation=Quaternion.Euler(90f,0f,0f);
+                session.SetMode(PracticeMode.AiRally);
+                Require(session.mode==PracticeMode.Training && session.drill==PracticeDrill.NetTouch &&
+                    session.SelectedSetting==selectionBeforeFailure && session.court.position==floorBeforeFailure,
+                    "Failed mode calibration did not preserve previous mode, drill, selection and court");
             }
             finally
             {
                 session.shuttle.Stop();
                 session.mode=savedMode; session.drill=savedDrill; session.Difficulty=savedDifficulty;
                 session.physics.racketWeightClass=savedWeight; session.physics.stringTensionLbs=savedTension;
+                session.compactSeatedTargets=savedCompact;
                 session.playerCamera.transform.SetPositionAndRotation(savedEye,savedHead);
                 session.Recenter();
             }

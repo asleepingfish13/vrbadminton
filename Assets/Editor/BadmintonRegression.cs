@@ -23,25 +23,39 @@ namespace ViveShuttleVR.Editor
         public static void Run()
         {
             checks = 0;
+            checks += ChineseLocalizationRegression.Run();
+            checks += SinglesMatchRulesRegression.Run();
+            checks += StandardSinglesSessionRegression.Run();
+            checks += RegulationFlightRegression.Run();
+            checks += RegulationServeRegression.Run();
+            checks += StandardRallyIntegrationRegression.Run();
             EditorSceneManager.OpenScene(BadmintonProjectBuilder.ScenePath);
             BadmintonProjectBuilder.ValidateXR();
             BadmintonSession session = Object.FindObjectOfType<BadmintonSession>();
             Require(session != null && session.rackets.Length == 2, "Two rackets and manager required");
+            Require(session.mode == PracticeMode.SinglesMatch && session.Difficulty == OpponentDifficulty.Easy,
+                "Saved scene must default to regulation singles with Easy AI");
             session.playerCamera.GetComponent<TrackedPoseDriver>().enabled = false;
             Require(session.simulatePlayerHeight && Mathf.Abs(session.simulatedStature-1.75f)<.0001f,
                 "Scene must default to requested 175 cm simulated stature");
             Require(Mathf.Abs(session.VirtualEyeHeight-1.63f)<.0001f,
                 "175 cm stature must map to the documented 163 cm virtual eye height");
+            Require(session.compactSeatedTargets,"Saved scene must default to the compact seated target profile");
             // Legacy lifecycle fixtures target the original repeatable reach ring.
             // Mixed-feed coverage below exercises the new runtime default separately.
             session.mode = PracticeMode.Training;
             session.feedPattern = FeedPattern.Fixed;
             session.simulatePlayerHeight = false;
+            session.compactSeatedTargets = false;
             foreach (Transform item in Object.FindObjectsOfType<Transform>())
                 Require(GameObjectUtility.GetMonoBehavioursWithMissingScriptCount(item.gameObject) == 0, "Missing script: " + item.name);
 
             checks += RegulationCourtRegression.Run(session.court);
+            checks += AthleteRegression.Run(session);
             checks += RacketSpecificationRegression.Run();
+            checks += RacketAppearanceRegression.Run(session);
+            checks += ShuttleHandRegression.Run(session);
+            checks += HandServeRegression.Run(session);
             checks += OpponentRegression.Run();
             TestFeeds();
             TestPlayerHeight(session);
@@ -233,18 +247,116 @@ namespace ViveShuttleVR.Editor
             Quaternion baseline=RacketController.GripToRacketRotation;
             Require(Vector3.Angle(baseline*Vector3.up,Vector3.forward)<.01f, "Racket shaft does not follow grip +Z");
             Require(Vector3.Angle(baseline*Vector3.forward,Vector3.right)<.01f, "Racket face not aligned to forehand grip +X");
+            Require(Vector3.Distance(RacketController.ViveLowerHandleMountOffset,new Vector3(0f,0f,-.08f))<.00001f,
+                "Vive lower-handle preset must be an explicit 8 cm heelward translation, not a face rotation");
+            Require(session.rackets[0].hand!=session.rackets[1].hand,
+                "Mounting checks need both left- and right-hand tracked grip frames");
+            MethodInfo samplePose=typeof(RacketController).GetMethod("SampleTrackedPose",BindingFlags.Instance|BindingFlags.NonPublic);
+            MethodInfo resetMotion=typeof(RacketController).GetMethod("ResetMotion",BindingFlags.Instance|BindingFlags.NonPublic);
+            Require(samplePose!=null && resetMotion!=null,"Tracked-pose motion sampling entry points are missing");
             foreach (RacketController racket in session.rackets)
             {
                 racket.ApplyGripAlignment();
+                Require(Vector3.Distance(racket.controllerMountOffset,RacketController.ViveLowerHandleMountOffset)<.00001f,
+                    "Saved " + racket.hand + " scene must use the Vive lower-handle mounting preset");
+                Require(racket.gripPositionOffset==Vector3.zero && racket.gripRotationOffsetEuler==Vector3.zero,
+                    "Saved " + racket.hand + " fine calibration must remain neutral and separate from the mounting preset");
                 Require(Vector3.Distance(racket.modelGripCenter,RacketSpecification.GripCenter)<.0001f,
                     "Controller grip anchor differs from the shared racket model");
                 Require(Vector3.Distance(racket.visual.transform.InverseTransformPoint(racket.head.position),RacketSpecification.HeadCenter)<.0001f,
                     "Tracked collision head differs from the rendered ASTROX-size geometry");
                 Vector3 modelGrip=racket.visual.transform.TransformPoint(racket.modelGripCenter);
-                Vector3 trackedGrip=racket.transform.TransformPoint(racket.gripPositionOffset);
-                Require(Vector3.Distance(modelGrip,trackedGrip)<.0001f, "Model handle centre is not anchored to controller grip");
+                Vector3 trackedGrip=racket.transform.TransformPoint(racket.GripAnchorLocal);
+                Require(Vector3.Distance(modelGrip,trackedGrip)<.0001f, "Model handle centre is not anchored to controller lower grip");
                 Require(Vector3.Angle(racket.visual.transform.localRotation*Vector3.up,
                     Quaternion.Euler(racket.gripRotationOffsetEuler)*Vector3.forward)<.01f, "Saved racket tilt survived grip alignment");
+
+                Vector3 savedPosition=racket.transform.localPosition;
+                Quaternion savedRotation=racket.transform.localRotation;
+                Vector3 savedMount=racket.controllerMountOffset;
+                Vector3 savedFinePosition=racket.gripPositionOffset;
+                Vector3 savedFineRotation=racket.gripRotationOffsetEuler;
+                try
+                {
+                    foreach(float yaw in new[]{0f,73f,210f})
+                    foreach(bool fineAdjustment in new[]{false,true})
+                    {
+                        string label=racket.hand+" / yaw "+yaw+" / fine "+fineAdjustment;
+                        racket.controllerMountOffset=RacketController.ViveLowerHandleMountOffset;
+                        racket.gripPositionOffset=fineAdjustment?new Vector3(.01f,-.015f,.02f):Vector3.zero;
+                        racket.gripRotationOffsetEuler=fineAdjustment?new Vector3(5f,-3f,2f):Vector3.zero;
+                        racket.ApplyGripAlignment();
+                        resetMotion.Invoke(racket,null);
+                        Vector3 gripFrom=new Vector3(.18f,1.12f,.24f);
+                        Vector3 gripTo=gripFrom+new Vector3(.005f,.002f,.01f);
+                        Quaternion poseFrom=Quaternion.Euler(20f,yaw,-12f);
+                        Quaternion poseTo=poseFrom*Quaternion.AngleAxis(10f,Vector3.up);
+                        float frame=1f/90f;
+                        Quaternion modelRotation=Quaternion.Euler(racket.gripRotationOffsetEuler)*baseline;
+                        Vector3 localHead=new Vector3(0f,0f,-.08f)+racket.gripPositionOffset+
+                            modelRotation*(RacketSpecification.HeadCenter-RacketSpecification.GripCenter);
+                        if(!fineAdjustment)
+                            Require(Mathf.Abs(localHead.z-.396f)<.00001f,
+                                "Lower mounting must shorten the tracked-origin head lever from 47.6 to 39.6 cm / "+label);
+                        Vector3 expectedFrom=racket.transform.parent.TransformPoint(gripFrom+poseFrom*localHead);
+                        Vector3 expectedTo=racket.transform.parent.TransformPoint(gripTo+poseTo*localHead);
+                        samplePose.Invoke(racket,new object[]{gripFrom,poseFrom,frame});
+                        Require(!racket.HasMotionSample && racket.HeadVelocity==Vector3.zero,
+                            "First pose after mount reset must not sweep a shuttle / "+label);
+                        samplePose.Invoke(racket,new object[]{gripTo,poseTo,frame});
+                        Require(racket.HasMotionSample && Mathf.Abs(racket.MotionDeltaTime-frame)<.00001f,
+                            "Continuous tracked pose did not produce a valid motion segment / "+label);
+                        Require(Vector3.Distance(racket.PreviousHead,expectedFrom)<.00001f &&
+                            Vector3.Distance(racket.CurrentHead,expectedTo)<.00001f,
+                            "Collision sweep does not use shifted world-space head endpoints / "+label);
+                        Require(Vector3.Distance(racket.HeadVelocity,(expectedTo-expectedFrom)/frame)<.0001f,
+                            "Wrist/translation velocity omitted or doubled the lower mounting lever / "+label);
+                        Require(Vector3.Distance(racket.head.position,racket.visual.transform.TransformPoint(RacketSpecification.HeadCenter))<.00001f,
+                            "Collision head and visible string bed separated after mounting / "+label);
+                        Vector3 expectedAnchor=racket.transform.TransformPoint(new Vector3(0f,0f,-.08f)+racket.gripPositionOffset);
+                        Require(Vector3.Distance(racket.visual.transform.TransformPoint(racket.modelGripCenter),expectedAnchor)<.00001f,
+                            "Mounting direction failed to rotate with the tracked hand / "+label);
+                        Vector3 savedVelocity=racket.HeadVelocity;
+                        racket.ApplyGripAlignment();
+                        Require(racket.HasMotionSample && Vector3.Distance(racket.HeadVelocity,savedVelocity)<.00001f,
+                            "An unchanged alignment reset valid swing velocity / "+label);
+
+                        // Changes are calibration, not real swings: discard the old endpoints
+                        // and speed history, then prime the new geometry for one pose sample.
+                        foreach(bool changeFineOffset in new[]{false,true})
+                        {
+                            if(changeFineOffset) racket.gripPositionOffset+=Vector3.right*.015f;
+                            else racket.controllerMountOffset+=Vector3.back*.015f;
+                            racket.ApplyGripAlignment();
+                            Require(!racket.HasMotionSample && racket.HeadVelocity==Vector3.zero &&
+                                racket.AngularVelocity==Vector3.zero && racket.MotionDeltaTime==0f && racket.RecentPeakSpeed==0f,
+                                "Mount/fine calibration injected phantom swing speed / "+label);
+                            samplePose.Invoke(racket,new object[]{gripTo,poseTo,frame});
+                            Require(!racket.HasMotionSample && racket.HeadVelocity==Vector3.zero,
+                                "First pose after changed calibration swept the old head location / "+label);
+                            samplePose.Invoke(racket,new object[]{gripTo,poseTo,frame});
+                            Require(racket.HasMotionSample && racket.HeadVelocity==Vector3.zero && racket.AngularVelocity==Vector3.zero,
+                                "Stationary remounted racket must resume with zero speed / "+label);
+                        }
+
+                        racket.controllerMountOffset=Vector3.zero;
+                        racket.gripPositionOffset=Vector3.zero;
+                        racket.gripRotationOffsetEuler=Vector3.zero;
+                        racket.ApplyGripAlignment();
+                        Require(Vector3.Distance(racket.visual.transform.TransformPoint(racket.modelGripCenter),racket.transform.position)<.00001f,
+                            "Clearing the mounting preset must restore the original tracked grip anchor / "+label);
+                    }
+                }
+                finally
+                {
+                    racket.controllerMountOffset=savedMount;
+                    racket.gripPositionOffset=savedFinePosition;
+                    racket.gripRotationOffsetEuler=savedFineRotation;
+                    racket.transform.localPosition=savedPosition;
+                    racket.transform.localRotation=savedRotation;
+                    racket.ApplyGripAlignment();
+                    resetMotion.Invoke(racket,null);
+                }
             }
             float headLever=(RacketSpecification.HeadCenter-RacketSpecification.GripCenter).magnitude;
             Vector3 wristTip=RacketController.VelocityAtPoint(Vector3.zero,Vector3.up*10f,Vector3.forward*headLever);
@@ -427,7 +539,8 @@ namespace ViveShuttleVR.Editor
         {
             // Exercise the actual ShuttleFlight -> swept geometry -> signed impact
             // path, not just the pure resolver. Restore all injected tracking state.
-            RacketController racket=session.rackets[0];
+            RacketController racket=Array.Find(session.rackets,item=>item.CanStrike);
+            Require(racket!=null,"Forward-hit pipeline requires a striking racket, not the free holding hand");
             string[] properties={ "IsTracked","HasMotionSample","PreviousHead","CurrentHead","PreviousRotation",
                 "HeadVelocity","AngularVelocity","MotionDeltaTime","RecentPeakSpeed" };
             object[] saved=new object[properties.Length];

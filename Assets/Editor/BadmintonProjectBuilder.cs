@@ -56,12 +56,13 @@ namespace ViveShuttleVR.Editor
 
             BadmintonSession session = new GameObject("Badminton Session").AddComponent<BadmintonSession>();
             session.court = court;
+            session.athletePrefab = AthleteAssetBuilder.BuildPrefab();
             session.audioSource = session.gameObject.AddComponent<AudioSource>();
             session.audioSource.playOnAwake = false;
             session.audioSource.spatialBlend = 0f;
-            session.scoreText = Text("Score", "SCORE 000    HIT 0/0    STREAK 0", new Vector3(0f, 4.12f, 12.87f), 0.060f, mint.color, court);
-            session.statusText = Text("Status", "AI EASY / FIRST TO 7", new Vector3(0f, 3.53f, 12.86f), 0.045f, Color.white, court);
-            session.detailText = Text("Controls", "TRIGGER: START    TAP MENU: PAUSE    HOLD MENU: RESET", new Vector3(0f, 2.88f, 12.85f), 0.029f, new Color(0.68f, 0.8f, 0.83f), court);
+            session.scoreText = Text("Score", "得分 000    击球 0/0    连击 0", new Vector3(0f, 4.12f, 12.87f), 0.060f, mint.color, court);
+            session.statusText = Text("Status", "正式单打 / 21 分，三局两胜", new Vector3(0f, 3.53f, 12.86f), 0.045f, Color.white, court);
+            session.detailText = Text("Controls", "右扳机：开始    短按菜单：暂停    长按菜单：重置", new Vector3(0f, 2.88f, 12.85f), 0.029f, new Color(0.68f, 0.8f, 0.83f), court);
             Cube("Scoreboard", new Vector3(0f, 3.55f, 13f), new Vector3(10.4f, 2.8f, 0.08f), navy, court);
             Cube("Scoreboard accent", new Vector3(0f, 4.98f, 12.95f), new Vector3(10.4f, 0.025f, 0.05f), mint, court);
             Transform quickGuide = new GameObject("Nearby controls card").transform;
@@ -69,7 +70,7 @@ namespace ViveShuttleVR.Editor
             quickGuide.localPosition = new Vector3(-1.25f,1.35f,2.2f);
             quickGuide.localRotation = Quaternion.Euler(0f,-25f,0f);
             Cube("Card backing",Vector3.zero,new Vector3(.95f,.56f,.025f),navy,quickGuide);
-            Text("Quick guide","TRIGGER / START\nTAP MENU / PAUSE\nHOLD MENU / RESET",new Vector3(0f,0f,-.025f),.011f,white.color,quickGuide);
+            Text("Quick guide","左扳机：持球/放球\n右扳机：自动开球\n短按菜单：暂停\n长按菜单：重置",new Vector3(0f,0f,-.025f),.0095f,white.color,quickGuide);
 
             session.reachMarker = Ring("Reach ring - shuttle arrives here", new Vector3(0.22f, 1.07f, 0.62f), 0.11f, 0.11f, 0.0025f, mint, court, false);
             session.landingMarker = Ring("Last landing", new Vector3(0f, 0.035f, 6f), 0.19f, 0.19f, 0.025f, coral, court, true);
@@ -103,7 +104,7 @@ namespace ViveShuttleVR.Editor
             Cube("Feeder body", new Vector3(0f,1.43f,8.9f), new Vector3(.65f,.48f,.5f), courtDark, root);
             Cube("Feeder mouth", new Vector3(0f,1.5f,8.63f), new Vector3(.32f,.15f,.05f), black, root);
             Cube("Feeder indicator", new Vector3(0f,1.68f,8.63f), new Vector3(.42f,.025f,.03f), mint, root);
-            Text("Feeder label", "AUTO FEED", new Vector3(0f,1.3f,8.62f), .008f, white.color, root);
+            Text("Feeder label", "自动发球", new Vector3(0f,1.3f,8.62f), .008f, white.color, root);
         }
 
         private static void CreateRig(BadmintonSession session)
@@ -137,14 +138,34 @@ namespace ViveShuttleVR.Editor
             grip.localPosition = new Vector3(hand == XRNode.LeftHand ? -.3f : .3f, .94f, .2f);
             Transform visual = new GameObject("Racket Visual").transform;
             visual.SetParent(grip, false);
-            Transform head = RacketGeometry.Build(visual, black, color, white, black);
+            Transform head = RacketGeometry.Build(visual,
+                RacketMaterial(RacketMaterialPart.Frame),
+                RacketMaterial(RacketMaterialPart.BlueGraphics),
+                RacketMaterial(RacketMaterialPart.Strings),
+                RacketMaterial(RacketMaterialPart.Grip),
+                RacketMaterial(RacketMaterialPart.WhiteGraphics),
+                RacketMaterial(RacketMaterialPart.OrangeGraphics),
+                RacketMaterial(RacketMaterialPart.Stencil));
             PersistRacketMeshes(visual, hand.ToString());
             RacketController controller = grip.gameObject.AddComponent<RacketController>();
             controller.hand = hand;
             controller.head = head;
             controller.visual = visual.gameObject;
             controller.session = session;
+            controller.controllerMountOffset = RacketController.ViveLowerHandleMountOffset;
             controller.ApplyGripAlignment();
+            if (hand == XRNode.LeftHand)
+            {
+                controller.freeHand = true;
+                visual.gameObject.SetActive(false);
+                ShuttleHand freeHand = grip.gameObject.AddComponent<ShuttleHand>();
+                freeHand.source = controller;
+                freeHand.session = session;
+                freeHand.handMaterial = Material("Free hand skin", new Color(.69f,.49f,.34f));
+                freeHand.cuffMaterial = Material("Free hand cuff", new Color(.08f,.19f,.29f));
+                freeHand.BuildVisuals();
+                session.shuttleHand = freeHand;
+            }
             return controller;
         }
 
@@ -202,6 +223,14 @@ namespace ViveShuttleVR.Editor
             trail.shadowCastingMode = ShadowCastingMode.Off;
             shuttle.trail = trail;
             session.shuttle = shuttle;
+        }
+
+        private static Material RacketMaterial(RacketMaterialPart part)
+        {
+            Material material=Material(RacketAppearance.AssetName(part),RacketAppearance.BaseColor(part));
+            RacketAppearance.Apply(material,part);
+            EditorUtility.SetDirty(material);
+            return material;
         }
 
         private static Material Material(string name, Color color, bool unlit = false)
@@ -271,6 +300,7 @@ namespace ViveShuttleVR.Editor
             label.fontSize = 80;
             label.characterSize = size;
             label.color = color;
+            GameLocalization.ApplyFont(label);
             return label;
         }
 
@@ -331,6 +361,44 @@ namespace ViveShuttleVR.Editor
                 OpenScene();
             }
             Debug.Log("[Shuttle Build] Preview rendered.");
+            RenderRacketPreview();
+        }
+
+        public static void RenderRacketPreview()
+        {
+            OpenScene();
+            BadmintonSession session=Object.FindObjectOfType<BadmintonSession>();
+            Transform visual=session.rackets[1].visual.transform;
+            // Use the scene's saved mesh/material assets, not a separate mockup.
+            foreach(Renderer renderer in Object.FindObjectsOfType<Renderer>()) renderer.enabled=false;
+            foreach(Renderer renderer in visual.GetComponentsInChildren<Renderer>()) renderer.enabled=true;
+            Camera camera=Camera.main;
+            camera.GetComponent<TrackedPoseDriver>().enabled=false;
+            Vector3 centre=visual.TransformPoint(new Vector3(0f,.3025f,0f));
+            camera.transform.SetPositionAndRotation(centre-visual.forward*1.5f,Quaternion.LookRotation(visual.forward,visual.up));
+            camera.orthographic=true;
+            camera.orthographicSize=.385f;
+            camera.backgroundColor=new Color(.24f,.28f,.32f);
+            RenderTexture target=new RenderTexture(700,1100,24,RenderTextureFormat.ARGB32);
+            Texture2D texture=new Texture2D(700,1100,TextureFormat.RGB24,false);
+            RenderTexture previous=RenderTexture.active;
+            try
+            {
+                camera.targetTexture=target;
+                camera.Render();
+                RenderTexture.active=target;
+                texture.ReadPixels(new Rect(0,0,700,1100),0,0);
+                texture.Apply();
+                File.WriteAllBytes(Path.GetFullPath("RacketPreview.png"),texture.EncodeToPNG());
+            }
+            finally
+            {
+                camera.targetTexture=null;
+                RenderTexture.active=previous;
+                Object.DestroyImmediate(texture);
+                Object.DestroyImmediate(target);
+                OpenScene();
+            }
         }
 
         [MenuItem("Tools/Vive Shuttle VR/Build Windows Player")]
@@ -359,6 +427,8 @@ namespace ViveShuttleVR.Editor
             if (EditorApplication.isPlaying) throw new InvalidOperationException("Stop Play Mode first.");
             BadmintonRegression.Run();
             RenderPreview();
+            AthleteAssetBuilder.RenderPreview();
+            HandServePreview.RenderPreview();
             BuildWindows();
         }
     }

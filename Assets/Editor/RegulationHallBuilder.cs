@@ -62,7 +62,7 @@ namespace ViveShuttleVR.Editor
                 markings.HorizontalRect(line.centre.x-line.size.x*.5f,line.centre.y-line.size.y*.5f,
                     line.centre.x+line.size.x*.5f,line.centre.y+line.size.y*.5f,.0015f);
             MeshObject("BWF 40 mm court markings", markings, white, root, "CourtMarkings");
-            Text("Court identification", "COURT 01", new Vector3(-4.4f,.006f,2f), .025f, white.color, root,
+            Text("Court identification", "01 号球场", new Vector3(-4.4f,.006f,2f), .025f, white.color, root,
                 Quaternion.Euler(90f,0f,90f));
             // A visual standing reminder, not a substitute for the SteamVR boundary.
             var stance = new MeshDraft();
@@ -181,9 +181,9 @@ namespace ViveShuttleVR.Editor
             }
             Cube("Exit doorway",new Vector3(-5.8f,1.1f,rear-.11f),new Vector3(1.1f,2.2f,.06f),steel,root);
             Cube("Door vision panel",new Vector3(-5.8f,1.52f,rear-.15f),new Vector3(.54f,.55f,.025f),upperWall,root);
-            Text("Hall title","SHUTTLE TRAINING HALL",new Vector3(0f,5.75f,rear-.13f),.051f,white.color,root,Quaternion.identity);
-            Text("Hall subtitle","13.40 x 6.10 m  /  SINGLES 5.18 m",new Vector3(0f,5.15f,rear-.14f),.024f,new Color(.60f,.74f,.76f),root,Quaternion.identity);
-            Text("Safety reminder","STAY WITHIN YOUR REAL PLAY SPACE\nVIRTUAL COURT SIZE IS NOT ROOM SIZE",new Vector3(-5.2f,2.55f,10.5f),.0125f,white.color,root,Quaternion.Euler(0f,-15f,0f));
+            Text("Hall title","羽毛球训练馆",new Vector3(0f,5.75f,rear-.13f),.051f,white.color,root,Quaternion.identity);
+            Text("Hall subtitle","球场 13.40 × 6.10 m / 单打 5.18 m",new Vector3(0f,5.15f,rear-.14f),.024f,new Color(.60f,.74f,.76f),root,Quaternion.identity);
+            Text("Safety reminder","请勿离开现实中的安全活动区\n虚拟球场大小不代表房间大小",new Vector3(-5.2f,2.55f,10.5f),.0125f,white.color,root,Quaternion.Euler(0f,-15f,0f));
         }
 
         private static Transform Child(string name,Transform parent)
@@ -204,6 +204,7 @@ namespace ViveShuttleVR.Editor
             label.transform.localPosition=position; label.transform.localRotation=rotation;
             label.text=text; label.characterSize=size; label.fontSize=96;
             label.anchor=TextAnchor.MiddleCenter; label.alignment=TextAlignment.Center; label.color=color;
+            GameLocalization.ApplyFont(label);
         }
 
         private static Material Material(string name,Color color,bool unlit=false)

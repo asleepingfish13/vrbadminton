@@ -10,9 +10,13 @@ namespace ViveShuttleVR
         public Transform head;
         public GameObject visual;
         public BadmintonSession session;
+        [Tooltip("Use this tracked grip as the shuttle-holding hand instead of a second racket.")]
+        public bool freeHand;
 
         [Header("Grip-pose alignment (not the controller's aim ray)")]
-        [Tooltip("Additional position relative to the tracked grip, in metres.")]
+        [Tooltip("Controller-specific mounting point in tracked grip coordinates. The Vive preset moves the handle 8 cm toward the heel (-Z); this is an ergonomic estimate, not a measured hardware dimension.")]
+        public Vector3 controllerMountOffset = ViveLowerHandleMountOffset;
+        [Tooltip("Fine adjustment added to the controller mounting point, in tracked grip coordinates and metres.")]
         public Vector3 gripPositionOffset = Vector3.zero;
         [Tooltip("Fine adjustment about the tracked grip axes, in degrees. Zero is the OpenXR grip baseline.")]
         public Vector3 gripRotationOffsetEuler = Vector3.zero;
@@ -20,6 +24,11 @@ namespace ViveShuttleVR
         public Vector3 modelGripCenter = RacketSpecification.GripCenter;
 
         public bool IsTracked { get; private set; }
+        public bool IsFreeHand { get { return freeHand; } }
+        public bool CanStrike { get { return !freeHand; } }
+        public float TriggerValue { get; private set; }
+        public bool TriggerPressed { get; private set; }
+        public bool MenuPressed { get; private set; }
         public bool HasMotionSample { get; private set; }
         public Vector3 PreviousHead { get; private set; }
         public Vector3 CurrentHead { get; private set; }
@@ -31,6 +40,19 @@ namespace ViveShuttleVR
         // Duration of the valid pose segment used by both the sweep and its derivatives.
         public float MotionDeltaTime { get; private set; }
         public float RecentPeakSpeed { get; private set; }
+
+        // Keep the mounting correction separate from the user's fine calibration. Setting
+        // controllerMountOffset to zero reverses the preset without changing the grip pose
+        // or rotating the racket face. Unity grip -Z points toward the Vive handle heel.
+        public const float ViveLowerHandleOffsetMetres = .08f;
+        public static Vector3 ViveLowerHandleMountOffset
+        {
+            get { return Vector3.back * ViveLowerHandleOffsetMetres; }
+        }
+        public Vector3 GripAnchorLocal
+        {
+            get { return controllerMountOffset + gripPositionOffset; }
+        }
 
         // OpenXR grip -Z follows the handle toward the thumb. Unity converts it to +Z.
         // The mesh's shaft is +Y and its face normal is +Z. Put the face normal on
@@ -63,7 +85,7 @@ namespace ViveShuttleVR
         {
             if (visual == null) return;
             Quaternion rotation = Quaternion.Euler(gripRotationOffsetEuler) * GripToRacketRotation;
-            Vector3 position = gripPositionOffset - rotation * modelGripCenter;
+            Vector3 position = GripAnchorLocal - rotation * modelGripCenter;
             Transform racket = visual.transform;
             bool changed = Vector3.SqrMagnitude(racket.localPosition - position) > 0.00000001f ||
                            Mathf.Abs(Quaternion.Dot(racket.localRotation, rotation)) < .999999f;
@@ -84,10 +106,12 @@ namespace ViveShuttleVR
                         device.TryGetFeatureValue(CommonUsages.isTracked, out tracked) && tracked &&
                         device.TryGetFeatureValue(CommonUsages.devicePosition, out position) && Finite(position) &&
                         device.TryGetFeatureValue(CommonUsages.deviceRotation, out rotation) && Finite(rotation);
-            if (visual != null) visual.SetActive(IsTracked);
+            if (visual != null) visual.SetActive(IsTracked && CanStrike);
             if (!IsTracked)
             {
                 ResetMotion();
+                TriggerValue = 0f;
+                TriggerPressed = MenuPressed = false;
                 wasTrigger = wasPad = false;
                 menuGesture.Reset();
                 return;
@@ -95,13 +119,18 @@ namespace ViveShuttleVR
 
             // Unity's HTC Vive OpenXR profile maps these device features to /input/grip/pose.
             // Do not substitute pointer/aim rotation or apply a guessed Vive tilt.
+            SampleTrackedPose(position, rotation, Time.unscaledDeltaTime);
+            HandleButtons();
+        }
+
+        private void SampleTrackedPose(Vector3 position, Quaternion rotation, float dt)
+        {
             PreviousHead = hadPose ? CurrentHead : head.position;
             PreviousRotation = head.rotation;
             transform.localPosition = position;
             transform.localRotation = rotation;
             CurrentHead = head.position;
 
-            float dt = Time.unscaledDeltaTime;
             Vector3 gripWorld = transform.position;
             Quaternion gripWorldRotation = transform.rotation;
             bool jump = !hadPose || dt < .001f || dt > .08f ||
@@ -142,7 +171,6 @@ namespace ViveShuttleVR
             previousGrip = gripWorld;
             previousGripRotation = gripWorldRotation;
             hadPose = true;
-            HandleButtons();
         }
 
         public static Vector3 HeadVelocityFromPoses(Vector3 previousHead, Vector3 currentHead, float dt)
@@ -192,16 +220,24 @@ namespace ViveShuttleVR
 
         private void HandleButtons()
         {
-            bool trigger = Read(CommonUsages.triggerButton, CommonUsages.trigger);
+            float triggerAxis;
+            bool triggerButton;
+            bool hasTriggerAxis=device.TryGetFeatureValue(CommonUsages.trigger,out triggerAxis);
+            device.TryGetFeatureValue(CommonUsages.triggerButton,out triggerButton);
+            TriggerValue=hasTriggerAxis && !float.IsNaN(triggerAxis) && !float.IsInfinity(triggerAxis)
+                ? Mathf.Clamp01(triggerAxis) : triggerButton ? 1f : 0f;
+            TriggerPressed=triggerButton || TriggerValue>.65f;
+            bool trigger = TriggerPressed;
             bool menu, pad;
             device.TryGetFeatureValue(CommonUsages.menuButton, out menu);
+            MenuPressed=menu;
             device.TryGetFeatureValue(CommonUsages.primary2DAxisClick, out pad);
             if (session != null)
             {
                 MenuGestureAction action = menuGesture.Step(menu, Time.unscaledDeltaTime);
                 if (action == MenuGestureAction.Recenter) session.Recenter();
                 else if (action == MenuGestureAction.Pause) session.TogglePause();
-                else if (!menu && trigger && !wasTrigger) session.StartPractice(hand);
+                else if (!menu && CanStrike && trigger && !wasTrigger) session.StartPractice(hand);
                 else if (!menu && !session.Running && pad && !wasPad)
                 {
                     Vector2 axis;
@@ -216,14 +252,6 @@ namespace ViveShuttleVR
             }
             wasTrigger = trigger;
             wasPad = pad;
-        }
-
-        private bool Read(InputFeatureUsage<bool> button, InputFeatureUsage<float> axis)
-        {
-            bool pressed;
-            float value;
-            return (device.TryGetFeatureValue(button, out pressed) && pressed) ||
-                   (device.TryGetFeatureValue(axis, out value) && value > .65f);
         }
 
         private static bool Finite(Vector3 value)
